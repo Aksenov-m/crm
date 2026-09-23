@@ -50,6 +50,10 @@ Remove-Item Env:NEXT_OUTPUT
 
 Документация: [Next.js в Timeweb](https://timeweb.cloud/docs/apps/deploying-frontend-apps/nextjs), [настройки frontend-приложений](https://timeweb.cloud/docs/apps/deploying-frontend-apps), [статический экспорт Next.js](https://nextjs.org/docs/app/guides/static-exports).
 
+## Подготовка Supabase
+
+Подготовка базы и входа через Supabase описана в [docs/SUPABASE_SETUP.md](docs/SUPABASE_SETUP.md). Там находятся последовательные SQL-файлы таблиц и проверка RLS. Текущий интерфейс пока использует localStorage; SQL и переменные окружения сами по себе не подключают его к базе.
+
 ## Что попробовать
 
 1. Нажмите **Добавить товар**, загрузите JPEG/PNG/WebP до 5 МБ, добавьте описание, цену и категорию. Или нажмите **Попробовать на примере**.
