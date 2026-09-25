@@ -3,12 +3,13 @@
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Check, ImagePlus, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
 import { generateListing, STAGES, type Product, type ProductStage } from "@/lib/crm";
+import { getCrmErrorMessage } from "@/lib/crm-repository";
 
 type ProductEditorProps = {
   product?: Product;
   initialStage?: ProductStage;
   onClose: () => void;
-  onSave: (product: Product) => void;
+  onSave: (product: Product) => Promise<void>;
 };
 
 const CATEGORIES = ["Мебель", "Электроника", "Бытовая техника", "Одежда и аксессуары", "Для дома", "Спорт и отдых", "Другое"];
@@ -34,7 +35,12 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
   const [generating, setGenerating] = useState(false);
   const [imageLoading, setImageLoading] = useState(false);
   const [error, setError] = useState("");
-  const busy = generating || imageLoading;
+  const [saving, setSaving] = useState(false);
+  const saveInProgress = useRef(false);
+  const newId = useRef<string | null>(null);
+  const busy = generating || imageLoading || saving;
+
+  function close() { if (!saveInProgress.current) onClose(); }
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -121,7 +127,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
     if (!image) return "Добавьте фотографию товара.";
     if (!brief.trim()) return "Кратко опишите товар: что продаёте и в каком он состоянии.";
     if (!price.trim() || !Number.isFinite(Number(price)) || Number(price) <= 0) return "Укажите цену больше нуля.";
-    if (Number(price) > Number.MAX_SAFE_INTEGER) return "Цена слишком большая. Укажите значение не больше 9 007 199 254 740 991 ₽.";
+    if (Number(price) >= 1e12) return "Цена должна быть меньше 1 000 000 000 000 ₽.";
     if (!category) return "Выберите категорию товара.";
     return "";
   }
@@ -147,9 +153,9 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
     }, 650);
   }
 
-  function save(event: FormEvent<HTMLFormElement>) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || saveInProgress.current) return;
     if (!generated) {
       generate();
       return;
@@ -165,19 +171,24 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
     }
     setError("");
     const now = new Date().toISOString();
-    onSave({
-      id: product?.id ?? crypto.randomUUID(),
+    newId.current ??= crypto.randomUUID();
+    saveInProgress.current = true;
+    setSaving(true);
+    try { await onSave({
+      id: product?.id ?? newId.current,
       title: title.trim(),
       description: description.trim(),
       price: Number(price),
       image,
+      imagePath: image === product?.image ? product.imagePath : undefined,
       stage,
       category,
       views: product?.views ?? 0,
       favorites: product?.favorites ?? 0,
       createdAt: product?.createdAt ?? now,
       soldAt: stage === "sold" ? product?.soldAt ?? now : undefined,
-    });
+    }); } catch (cause) { setError(getCrmErrorMessage(cause)); }
+    finally { saveInProgress.current = false; setSaving(false); }
   }
 
   function useExample() {
@@ -199,8 +210,8 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
       className="modal-panel product-editor"
       aria-labelledby={`${formId}-heading`}
       aria-describedby={`${formId}-intro`}
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onCancel={(event) => { event.preventDefault(); close(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) close(); }}
     >
       <div className="modal-header">
         <div>
@@ -209,7 +220,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
             {product ? "Обновите информацию и выберите этап продажи." : "Одно фото, несколько слов — и объявление готово."}
           </p>
         </div>
-        <button type="button" className="icon-button" aria-label="Закрыть карточку" onClick={onClose}><X size={20} /></button>
+        <button type="button" className="icon-button" aria-label="Закрыть карточку" disabled={saving} onClick={close}><X size={20} /></button>
       </div>
 
       <form id={formId} className="editor-form" onSubmit={save} noValidate>
@@ -238,7 +249,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
               >
                 {image ? (
                   <>
-                    {/* Uploaded photos stay local and can be data URLs. */}
+                    {/* A new photo is previewed locally before uploading on save. */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img className="photo-preview" src={image} alt="Фотография товара" />
                     <span className="photo-action"><Upload size={15} /> Заменить фото</span>
@@ -292,7 +303,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
                   </select>
                 </label>
               )}
-              <div className="generation-note"><Sparkles size={16} /><span>Демо-генерация работает локально по вашему тексту. Проверьте и дополните результат.</span></div>
+              <div className="generation-note"><Sparkles size={16} /><span>Текст собирается по шаблону из вашего описания. Проверьте и дополните результат.</span></div>
               {generated && (
                 <button type="button" className="button button-secondary" onClick={generate} disabled={busy}>
                   {generating ? <LoaderCircle size={17} className="animate-spin" /> : <Sparkles size={17} />}
@@ -318,12 +329,12 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
         </div>
 
         <div className="modal-footer">
-          <span className="muted">{product ? "Изменения сохранятся в этом браузере" : "Публикация на Авито имитируется в демо"}</span>
+          <span className="muted">Сохранение в CRM · без публикации на Авито</span>
           <div className="flex items-center gap-2">
-            <button type="button" className="button button-secondary" onClick={onClose}>Отмена</button>
+            <button type="button" className="button button-secondary" disabled={saving} onClick={close}>Отмена</button>
             <button type="submit" className="button button-primary" disabled={busy}>
               {generating ? <LoaderCircle size={17} className="animate-spin" /> : generated ? <Check size={17} /> : <Sparkles size={17} />}
-              {generating ? "Готовим объявление…" : product ? "Сохранить изменения" : generated ? "Добавить на доску" : "Сгенерировать объявление"}
+              {saving ? "Сохраняем…" : generating ? "Готовим объявление…" : product ? "Сохранить изменения" : generated ? "Добавить на доску" : "Сгенерировать объявление"}
             </button>
           </div>
         </div>

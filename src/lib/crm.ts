@@ -7,6 +7,7 @@ export interface Product {
   description: string;
   price: number;
   image: string;
+  imagePath?: string;
   stage: ProductStage;
   category: string;
   views: number;

@@ -19,6 +19,26 @@ button:disabled { transform: none; }
 svg { flex-shrink: 0; }
 button svg { pointer-events: none; }
 .app-shell { min-height: 100vh; }
+.crm-content { border: 0; padding: 0; margin: 0; min-width: 0; }
+.crm-content:disabled { cursor: progress; }
+.profile>div { min-width: 0; }
+.profile-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 125px; }
+.logout-button { font-size: 12px; white-space: nowrap; }
+.session-screen { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 20px; background: radial-gradient(ellipse at top,#e8f0ff 0,transparent 65%),#f7f9fc; }
+.session-panel { width: 100%; max-width: 440px; background: white; border: 1px solid #e6ebf4; border-radius: 22px; padding: 36px; box-shadow: 0 12px 48px #20366109; }
+.session-brand { display: flex; gap: 9px; align-items: center; color: #202633; font-size: 29px; font-weight: 750; letter-spacing: -1px; margin-bottom: 36px; }
+.session-brand .brand-period { margin-left: -10px; }
+.session-eyebrow { display: flex; align-items: center; gap: 7px; color: #788ba8; font-size: 9px; font-weight: 650; letter-spacing: 1px; margin-bottom: 12px; }
+.session-panel h1 { font-size: 26px; font-weight: 650; letter-spacing: -.7px; color: #202a3e; }
+.session-description { color: #8993a5; font-size: 13px; line-height: 1.7; margin: 10px 0 26px; }
+.session-form { display: flex; flex-direction: column; gap: 18px; }
+.session-form .input { margin-top: 8px; }
+.session-submit { justify-content: center; margin-top: 6px; min-height: 44px; }
+.session-note { color: #99a1af; font-size: 11px; line-height: 1.7; margin: 23px 0 0; text-align: center; }
+.session-caption { color: #9ba5b7; font-size: 11px; text-align: center; margin-top: 22px; }
+.session-loading, .session-actions { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+.session-loading { color: #7b879b; font-size: 14px; }
+@media (max-width: 480px) { .session-panel { padding: 28px 24px; } }
 .sidebar { width: 218px; position: fixed; inset: 0 auto 0 0; background: white; border-right: 1px solid var(--line); display: flex; flex-direction: column; z-index: 30; }
 .brand { height: 86px; padding: 0 25px; display: flex; align-items: center; gap: 10px; color: #202633; text-decoration: none; font-size: 31px; font-weight: 750; letter-spacing: -1.8px; }
 .brand-mark { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 11px; background: var(--blue); color: white; }

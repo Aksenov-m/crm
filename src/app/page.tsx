@@ -1,5 +1,5 @@
-import { CrmApp } from "@/components/crm-app";
+import { CrmSession } from "@/components/crm-session";
 
 export default function Home() {
-  return <CrmApp />;
+  return <CrmSession />;
 }
