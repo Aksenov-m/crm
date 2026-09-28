@@ -6,6 +6,7 @@ import { generateListing, STAGES, type Product, type ProductStage } from "@/lib/
 import { getCrmErrorMessage } from "@/lib/crm-repository";
 
 type ProductEditorProps = {
+  demo?: boolean;
   product?: Product;
   initialStage?: ProductStage;
   onClose: () => void;
@@ -15,7 +16,7 @@ type ProductEditorProps = {
 const CATEGORIES = ["Мебель", "Электроника", "Бытовая техника", "Одежда и аксессуары", "Для дома", "Спорт и отдых", "Другое"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-export function ProductEditor({ product, initialStage, onClose, onSave }: ProductEditorProps) {
+export function ProductEditor({ product, initialStage, onClose, onSave, demo = false }: ProductEditorProps) {
   const formId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
@@ -329,7 +330,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
         </div>
 
         <div className="modal-footer">
-          <span className="muted">Сохранение в CRM · цена связанного объявления отправляется на Авито</span>
+          <span className="muted">{demo ? "Деморежим · изменения только в этой сессии" : "Сохранение в CRM · цена связанного объявления отправляется на Авито"}</span>
           <div className="flex items-center gap-2">
             <button type="button" className="button button-secondary" disabled={saving} onClick={close}>Отмена</button>
             <button type="submit" className="button button-primary" disabled={busy}>
