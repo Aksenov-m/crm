@@ -38,6 +38,7 @@ test("demo edits, moves and resets products without calling real services", asyn
 
 test("demo is linked from login and fits a mobile screen", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByRole("link", { name: "Попробовать демо без входа" })).toHaveAttribute("href", "/demo/");
   await page.getByRole("link", { name: "Попробовать демо без входа" }).click();
   await expect(page).toHaveURL(/\/demo\/?$/);
   await page.setViewportSize({ width: 390, height: 844 });
