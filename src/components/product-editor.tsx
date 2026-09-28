@@ -329,7 +329,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave }: Produc
         </div>
 
         <div className="modal-footer">
-          <span className="muted">Сохранение в CRM · без публикации на Авито</span>
+          <span className="muted">Сохранение в CRM · цена связанного объявления отправляется на Авито</span>
           <div className="flex items-center gap-2">
             <button type="button" className="button button-secondary" disabled={saving} onClick={close}>Отмена</button>
             <button type="submit" className="button button-primary" disabled={busy}>

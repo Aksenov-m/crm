@@ -66,7 +66,7 @@ function isBuiltinImage(path: string): boolean {
 function assertImagePath(path: string, ownerId: string, productId: string): void {
   if (isBuiltinImage(path)) return;
   const parts = path.split("/");
-  if (parts.length !== 3 || parts[0] !== ownerId || parts[1] !== productId || !UUID.test(parts[2].replace(/\.jpg$/, "")) || !parts[2].endsWith(".jpg")) {
+  if (parts.length !== 3 || parts[0] !== ownerId || parts[1] !== productId || !/\.(?:jpg|png|webp)$/.test(parts[2]) || !UUID.test(parts[2].replace(/\.(?:jpg|png|webp)$/, ""))) {
     fail("Некорректный путь фотографии. Выберите фотографию заново.");
   }
 }

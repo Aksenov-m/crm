@@ -1,0 +1,4 @@
+project_id = "proaksenov-crm"
+
+[functions.avito]
+verify_jwt = true

@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { createCrmRepository, getCrmErrorMessage } from "@/lib/crm-repository";
+import { createAvitoRepository } from "@/lib/avito";
 import {
   ArrowDownUp, ArrowRight, ArrowUpRight, BarChart3, Bell, Check,
   CheckCheck, CheckCircle2, ChevronDown, ChevronRight, CircleHelp,
   Eye, GripVertical, Heart, LayoutGrid, List, MessageCircle, MoreHorizontal,
-  Package, Plus, Search, ShoppingBag, Sparkles, Users, Wallet, X,
+  Package, Plus, Plug, Search, ShoppingBag, Sparkles, Users, Wallet, X,
 } from "lucide-react";
 import {
   formatMoney, getStats, moveProduct,
@@ -16,13 +17,15 @@ import {
 import { ProductEditor } from "./product-editor";
 import { Conversations } from "./conversations";
 import { Buyers } from "./buyers";
+import { AvitoConnection } from "./avito-connection";
 
-type Page = "products" | "messages" | "buyers" | "analytics";
+type Page = "products" | "messages" | "buyers" | "analytics" | "avito";
 const NAVIGATION = [
   { id: "products" as const, label: "Товары", icon: Package },
   { id: "messages" as const, label: "Сообщения", icon: MessageCircle },
   { id: "buyers" as const, label: "Покупатели", icon: Users },
   { id: "analytics" as const, label: "Аналитика", icon: BarChart3 },
+  { id: "avito" as const, label: "Авито", icon: Plug },
 ];
 
 function Logo() {
@@ -31,6 +34,7 @@ function Logo() {
 
 export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; user: User; onLogout: () => Promise<void> }) {
   const repository = useMemo(() => createCrmRepository(client, user.id), [client, user.id]);
+  const avitoRepository = useMemo(() => createAvitoRepository(client), [client]);
   const [state, setState] = useState<DemoState>({ version: 1, products: [], buyers: [], messages: [] });
   const [hydrated, setHydrated] = useState(false);
   const [storageError, setStorageError] = useState("");
@@ -56,6 +60,7 @@ export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; use
   const lastLoaded = useRef(0);
   const [busy, setBusy] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [avitoBusy, setAvitoBusy] = useState(false);
 
   async function refreshData() {
     if (loading.current || pending.current.size) return;
@@ -155,9 +160,15 @@ export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; use
 
   async function saveProduct(product: Product) {
     const existing = Boolean(editor?.product);
-    await mutate(`product:${product.id}`, () => repository.saveProduct(product, existing), (saved) => {
+    const priceChanged = existing && editor?.product?.price !== product.price;
+    await mutate(`product:${product.id}`, async () => {
+      const saved = await repository.saveProduct(product, existing);
+      const priceSynced = priceChanged ? await avitoRepository.updatePriceForProduct(user.id, saved.id, saved.price) : false;
+      return { saved, priceSynced };
+    }, ({ saved, priceSynced }) => {
       setState((current) => ({ ...current, products: existing ? current.products.map((item) => item.id === saved.id ? saved : item) : [saved, ...current.products] }));
       setToast(existing ? "Изменения сохранены" : "Объявление добавлено на доску");
+      if (priceSynced) setToast("Цена изменена и отправлена на Авито");
       setEditor(null);
     });
   }
@@ -199,11 +210,11 @@ export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; use
 
   return <div className="app-shell">
     <aside className="sidebar">
-      <a className="brand" href="#" onClick={(event) => { event.preventDefault(); if (!busy && !refreshing) setPage("products"); }} aria-label="Поток — главная"><Logo /><span>поток<span className="brand-period">.</span></span></a>
+      <a className="brand" href="#" onClick={(event) => { event.preventDefault(); if (!busy && !avitoBusy && !refreshing) setPage("products"); }} aria-label="ПроЛот — главная"><Logo /><span>ПроЛот<span className="brand-period">.</span></span></a>
       <div className="workspace-switch"><span className="workspace-icon"><ShoppingBag size={18} /></span><div><strong>Мой магазин</strong><span>Личное пространство</span></div><ChevronDown size={15} /></div>
       <p className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</p>
       <nav className="navigation" aria-label="Основная навигация">
-        {NAVIGATION.map(({ id, label, icon: Icon }) => <button key={id} disabled={busy || refreshing || signingOut} aria-label={label} title={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={19} /><span>{label}</span>{id === "messages" && stats.unreadCount > 0 && <span className="nav-count">{stats.unreadCount}</span>}</button>)}
+        {NAVIGATION.map(({ id, label, icon: Icon }) => <button key={id} disabled={busy || avitoBusy || refreshing || signingOut} aria-label={label} title={label} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)} aria-current={page === id ? "page" : undefined}><Icon size={19} /><span>{label}</span>{id === "messages" && stats.unreadCount > 0 && <span className="nav-count">{stats.unreadCount}</span>}</button>)}
       </nav>
       <div className="sidebar-bottom">
         <div className="demo-card"><span className="demo-label"><span />ЛИЧНАЯ CRM</span><strong>Ваш магазин, без рутины</strong><p>Товары и покупатели сохраняются в вашем аккаунте.</p><button onClick={() => setHelpOpen(true)}>Как это работает <ArrowUpRight size={15} /></button></div>
@@ -213,10 +224,10 @@ export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; use
     </aside>
 
     <div className="main-shell">
-      <header className="topbar"><div className="breadcrumb"><span>Рабочее пространство</span><ChevronRight size={14} /><strong>{title}</strong></div><div className="topbar-right"><span className="local-badge"><span />Личная CRM</span><div className="notification-wrapper" ref={notificationPanel}><button className={`icon-button notification-button ${notificationsOpen ? "selected" : ""}`} aria-label={`Уведомления: ${stats.unreadCount} непрочитанных`} aria-expanded={notificationsOpen} disabled={busy || signingOut} onClick={() => setNotificationsOpen(!notificationsOpen)}><Bell size={19} />{stats.unreadCount > 0 && <span className="notification-dot" />}</button>{notificationsOpen && <div className="notification-popover"><div className="notification-heading"><strong>Уведомления</strong><span className="count-badge">{unread.length}</span></div>{unread.length ? unread.slice(-5).reverse().map((message) => <button key={message.id} className="notification-entry" onClick={() => openChat(message.buyerId)}><span className="small-avatar"><MessageCircle size={16} /></span><span><strong>{state.buyers.find((buyer) => buyer.id === message.buyerId)?.name ?? "Покупатель"}</strong><span>{message.text}</span></span><span className="blue-dot" /></button>) : <div className="notification-empty"><CheckCheck size={26} /><p>Вы всё прочитали</p></div>}</div>}</div><span className="topbar-divider" /><button className="button button-ghost logout-button" disabled={busy || signingOut} onClick={() => void logout()}>{signingOut ? "Выходим…" : "Выйти"}</button></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>Рабочее пространство</span><ChevronRight size={14} /><strong>{title}</strong></div><div className="topbar-right"><span className="local-badge"><span />Личная CRM</span><div className="notification-wrapper" ref={notificationPanel}><button className={`icon-button notification-button ${notificationsOpen ? "selected" : ""}`} aria-label={`Уведомления: ${stats.unreadCount} непрочитанных`} aria-expanded={notificationsOpen} disabled={busy || avitoBusy || signingOut} onClick={() => setNotificationsOpen(!notificationsOpen)}><Bell size={19} />{stats.unreadCount > 0 && <span className="notification-dot" />}</button>{notificationsOpen && <div className="notification-popover"><div className="notification-heading"><strong>Уведомления</strong><span className="count-badge">{unread.length}</span></div>{unread.length ? unread.slice(-5).reverse().map((message) => <button key={message.id} className="notification-entry" onClick={() => openChat(message.buyerId)}><span className="small-avatar"><MessageCircle size={16} /></span><span><strong>{state.buyers.find((buyer) => buyer.id === message.buyerId)?.name ?? "Покупатель"}</strong><span>{message.text}</span></span><span className="blue-dot" /></button>) : <div className="notification-empty"><CheckCheck size={26} /><p>Вы всё прочитали</p></div>}</div>}</div><span className="topbar-divider" /><button className="button button-ghost logout-button" disabled={busy || avitoBusy || signingOut} onClick={() => void logout()}>{signingOut ? "Выходим…" : "Выйти"}</button></div></header>
 
-      <main className="main-content" id="main-content"><fieldset className="crm-content" disabled={busy || refreshing || signingOut}>
-        <div className="page-heading"><div><div className="heading-eyebrow">ВСЁ ПОД КОНТРОЛЕМ</div><h1>{page === "products" ? "Мои товары" : title}</h1><p>{page === "products" ? "От первого фото до успешной продажи — в одном месте." : page === "messages" ? "Все разговоры с покупателями рядом с вашими товарами." : page === "buyers" ? "Знакомьтесь, договаривайтесь и сохраняйте важное." : "Посмотрите, как ваши товары превращаются в продажи."}</p></div>{page === "products" && <button className="button button-primary add-product-button" onClick={() => setEditor({})}><Plus size={18} />Добавить товар</button>}{page === "analytics" && <span className="pill analytics-demo-label">Данные вашей CRM</span>}</div>
+      <main className="main-content" id="main-content"><fieldset className="crm-content" disabled={busy || avitoBusy || refreshing || signingOut}>
+        <div className="page-heading"><div><div className="heading-eyebrow">ВСЁ ПОД КОНТРОЛЕМ</div><h1>{page === "products" ? "Мои товары" : title}</h1><p>{page === "products" ? "От первого фото до успешной продажи — в одном месте." : page === "messages" ? "Все разговоры с покупателями рядом с вашими товарами." : page === "buyers" ? "Знакомьтесь, договаривайтесь и сохраняйте важное." : page === "avito" ? "Ваши объявления Авито и товары CRM." : "Посмотрите, как ваши товары превращаются в продажи."}</p></div>{page === "products" && <button className="button button-primary add-product-button" onClick={() => setEditor({})}><Plus size={18} />Добавить товар</button>}{page === "analytics" && <span className="pill analytics-demo-label">Данные вашей CRM</span>}</div>
 
         {storageError && <div className="storage-warning" role="alert">{storageError} <button className="text-button" onClick={() => void refreshData()}>Обновить данные</button></div>}
 
@@ -244,8 +255,9 @@ export function CrmApp({ client, user, onLogout }: { client: SupabaseClient; use
         {page === "messages" && <Conversations products={state.products} buyers={state.buyers} messages={state.messages} selectedBuyerId={selectedBuyer} onSelectBuyer={openChat} onSend={saveDraft} />}
         {page === "buyers" && <Buyers products={state.products} buyers={state.buyers} onAdd={(buyer) => saveBuyer(buyer, false)} onUpdate={(buyer) => saveBuyer(buyer, true)} onStatusChange={changeBuyerStatus} onOpenChat={openChat} />}
         {page === "analytics" && <Analytics state={state} />}
+        {page === "avito" && <AvitoConnection client={client} ownerId={user.id} products={state.products} onProductsChanged={refreshData} onBusyChange={setAvitoBusy} />}
 
-        <footer className="page-footer"><span>Поток — больше времени на продажи</span><span>Личная CRM · Авито ещё не подключён</span></footer>
+        <footer className="page-footer"><span>ПроЛот — больше времени на продажи</span><span>Личная CRM · Публикация в Авито не подключена</span></footer>
       </fieldset></main>
     </div>
     {editor && <ProductEditor {...editor} onClose={() => setEditor(null)} onSave={saveProduct} />}
@@ -276,5 +288,5 @@ function Analytics({ state }: { state: DemoState }) {
 function HelpDialog({ onClose, onCreate }: { onClose: () => void; onCreate: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
-  return <dialog ref={dialog} className="modal-panel help-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-header"><div><span className="pill">ЗНАКОМСТВО С ПОТОКОМ</span><h2>От идеи до «Продано»</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть подсказки"><X size={20} /></button></div><div className="modal-body help-steps">{[{ title: "Добавьте товар", text: "Загрузите фото, напишите пару слов и попробуйте локальную генерацию объявления." }, { title: "Проведите по этапам", text: "Перетаскивайте карточку по доске. На телефоне используйте меню этапов в правом нижнем углу карточки." }, { title: "Познакомьтесь с покупателем", text: "Создайте карточку покупателя, добавьте заметку и сохраните черновик ответа в диалоге." }, { title: "Отметьте продажу", text: "Переместите товар в «Продан»: выручка и аналитика пересчитаются автоматически." }].map((step, index) => <div className="help-step" key={step.title}><span>{index + 1}</span><div><h3>{step.title}</h3><p>{step.text}</p></div></div>)}<div className="demo-explanation">Товары, покупатели и черновики сохраняются в вашем аккаунте Supabase. Для загрузки изменений с другого устройства нажмите «Обновить данные». Статусы покупателей и этапы товаров управляются отдельно. Публикация и отправка сообщений в Авито пока не подключены.</div></div><div className="modal-footer"><button className="button button-primary" onClick={onCreate}><Plus size={16} />Добавить первый товар</button></div></dialog>;
+  return <dialog ref={dialog} className="modal-panel help-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-header"><div><span className="pill">ЗНАКОМСТВО С ПРОЛОТОМ</span><h2>От идеи до «Продано»</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть подсказки"><X size={20} /></button></div><div className="modal-body help-steps">{[{ title: "Добавьте товар", text: "Загрузите фото, напишите пару слов и попробуйте локальную генерацию объявления." }, { title: "Проведите по этапам", text: "Перетаскивайте карточку по доске. На телефоне используйте меню этапов в правом нижнем углу карточки." }, { title: "Познакомьтесь с покупателем", text: "Создайте карточку покупателя, добавьте заметку и сохраните черновик ответа в диалоге." }, { title: "Отметьте продажу", text: "Переместите товар в «Продан»: выручка и аналитика пересчитаются автоматически." }].map((step, index) => <div className="help-step" key={step.title}><span>{index + 1}</span><div><h3>{step.title}</h3><p>{step.text}</p></div></div>)}<div className="demo-explanation">Товары, покупатели и черновики сохраняются в вашем аккаунте Supabase. Для загрузки изменений с другого устройства нажмите «Обновить данные». Статусы покупателей и этапы товаров управляются отдельно. Публикация и отправка сообщений в Авито пока не подключены.</div></div><div className="modal-footer"><button className="button button-primary" onClick={onCreate}><Plus size={16} />Добавить первый товар</button></div></dialog>;
 }

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Поток — CRM для продавцов Авито",
+  title: "ПроЛот — CRM для продавцов Авито",
   description: "Личная CRM: товары, объявления, покупатели и черновики сообщений в одном месте.",
   robots: { index: false, follow: false },
 };

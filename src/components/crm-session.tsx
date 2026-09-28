@@ -7,7 +7,7 @@ import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 import { CrmApp } from "./crm-app";
 
 export function SessionPanel({ children }: { children: ReactNode }) {
-  return <main className="session-screen"><section className="session-panel"><div className="session-brand"><span className="brand-mark"><Package size={24} /></span>поток<span className="brand-period">.</span></div>{children}</section><p className="session-caption">Ваши товары, покупатели и продажи — в одном месте.</p></main>;
+  return <main className="session-screen"><section className="session-panel"><div className="session-brand"><span className="brand-mark"><Package size={24} /></span>ПроЛот<span className="brand-period">.</span></div>{children}</section><p className="session-caption">Ваши товары, покупатели и продажи — в одном месте.</p></main>;
 }
 
 function authError(error: unknown) {

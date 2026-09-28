@@ -8,10 +8,10 @@ export const OWNER_EMAIL = "owner@example.com";
 export const OTHER_OWNER_EMAIL = "other@example.com";
 export const TEST_PASSWORD = "test-password-123";
 
-type Table = "products" | "buyers" | "messages";
+type Table = "products" | "buyers" | "messages" | "avito_item_links";
 export type Row = Record<string, unknown> & { id: string; owner_id: string };
 type RequestRecord = { method: string; path: string; ownerId?: string; body?: unknown };
-const tables: Table[] = ["products", "buyers", "messages"];
+const tables: Table[] = ["products", "buyers", "messages", "avito_item_links"];
 
 function user(ownerId: string) {
   return {
@@ -58,6 +58,7 @@ export async function mockSupabase(page: Page, seed: Partial<Record<Table, Row[]
     products: structuredClone(seed.products ?? []),
     buyers: structuredClone(seed.buyers ?? []),
     messages: structuredClone(seed.messages ?? []),
+    avito_item_links: structuredClone(seed.avito_item_links ?? []),
   };
   const requests: RequestRecord[] = [];
   const unexpectedRequests: string[] = [];
@@ -103,6 +104,22 @@ export async function mockSupabase(page: Page, seed: Partial<Record<Table, Row[]
     }
     if (url.pathname === "/auth/v1/user") return ownerId ? fulfill(200, user(ownerId)) : fulfill(401, { msg: "Invalid JWT" });
     if (url.pathname === "/auth/v1/logout") return fulfill(204, null);
+
+    if (url.pathname === "/rest/v1/rpc/connect_avito_item") {
+      if (!ownerId) return fulfill(401, { code: "42501" });
+      if (failedWrites.delete("avito_item_links")) return fulfill(500, { code: "TEST_WRITE_ERROR" });
+      const input = body as Record<string, unknown>;
+      const linked = rows.avito_item_links.find((link) => link.owner_id === ownerId && link.account_id === input.p_account_id && link.item_id === input.p_item_id);
+      if (linked) return fulfill(200, linked.product_id);
+      let productId = input.p_product_id;
+      if (productId && !rows.products.some((product) => product.owner_id === ownerId && product.id === productId)) return fulfill(400, { code: "23503" });
+      if (!productId) {
+        productId = randomUUID();
+        rows.products.push({ id: String(productId), owner_id: ownerId, title: input.p_title, price: input.p_price, category: input.p_category, description: "", stage: input.p_status === "active" ? "published" : "new", image_path: null, created_at: new Date().toISOString(), sold_at: null, views: 0, favorites: 0 });
+      }
+      rows.avito_item_links.push({ id: randomUUID(), owner_id: ownerId, account_id: input.p_account_id, item_id: input.p_item_id, product_id: productId });
+      return fulfill(200, productId);
+    }
 
     const tableName = url.pathname.replace("/rest/v1/", "") as Table;
     if (tables.includes(tableName)) {
