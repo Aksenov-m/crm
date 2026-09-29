@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/crm.test.ts tests/crm-repository.test.ts tests/avito-handler.test.ts",
+    "test": "tsx --test tests/crm.test.ts tests/crm-repository.test.ts tests/avito-handler.test.ts tests/avito-repository.test.ts",
     "test:e2e": "playwright test",
     "avito:bundle": "node scripts/build-avito-function.mjs"
   },

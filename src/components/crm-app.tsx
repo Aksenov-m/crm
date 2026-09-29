@@ -19,6 +19,7 @@ import { ProductEditor } from "./product-editor";
 import { Conversations } from "./conversations";
 import { Buyers } from "./buyers";
 import { AvitoConnection } from "./avito-connection";
+import { AvitoMessenger } from "./avito-messenger";
 
 type Page = "products" | "messages" | "buyers" | "analytics" | "avito";
 const NAVIGATION = [
@@ -55,6 +56,7 @@ export function CrmApp({ client, user, onLogout, demo = false, onResetDemo }: Cr
   const [view, setView] = useState<"board" | "list">("board");
   const [editor, setEditor] = useState<{ product?: Product; initialStage?: ProductStage } | null>(null);
   const [selectedBuyer, setSelectedBuyer] = useState<string | null>(null);
+  const [messageSource, setMessageSource] = useState<"avito" | "drafts">("avito");
   const [toast, setToast] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -147,6 +149,7 @@ export function CrmApp({ client, user, onLogout, demo = false, onResetDemo }: Cr
   }
 
   function openChat(id: string) {
+    setMessageSource("drafts");
     setSelectedBuyer(id);
     setPage("messages");
     setNotificationsOpen(false);
@@ -263,7 +266,10 @@ export function CrmApp({ client, user, onLogout, demo = false, onResetDemo }: Cr
           </section>
         </>}
 
-        {page === "messages" && <Conversations products={state.products} buyers={state.buyers} messages={state.messages} selectedBuyerId={selectedBuyer} onSelectBuyer={openChat} onSend={saveDraft} />}
+        {page === "messages" && <>
+          {!demo && avitoRepository && <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Источник сообщений"><button className="button button-secondary" disabled={avitoBusy} aria-pressed={messageSource === "avito"} onClick={() => setMessageSource("avito")}>Авито — реальные сообщения</button><button className="button button-secondary" disabled={avitoBusy} aria-pressed={messageSource === "drafts"} onClick={() => setMessageSource("drafts")}>Черновики CRM</button></div>}
+          {!demo && avitoRepository && messageSource === "avito" ? <AvitoMessenger repository={avitoRepository} onBusyChange={setAvitoBusy} /> : <Conversations products={state.products} buyers={state.buyers} messages={state.messages} selectedBuyerId={selectedBuyer} onSelectBuyer={openChat} onSend={saveDraft} />}
+        </>}
         {page === "buyers" && <Buyers products={state.products} buyers={state.buyers} onAdd={(buyer) => saveBuyer(buyer, false)} onUpdate={(buyer) => saveBuyer(buyer, true)} onStatusChange={changeBuyerStatus} onOpenChat={openChat} />}
         {page === "analytics" && <Analytics state={state} />}
         {page === "avito" && (demo ? <section className="rounded-2xl border border-slate-200 bg-white p-6"><h2 className="text-lg font-semibold">Авито в деморежиме</h2><p className="mt-3 text-sm text-slate-600">В рабочем аккаунте можно подключить Авито, импортировать объявления и изменять цену связанного товара. В демо показаны вымышленные товары; подключение и отправка изменений на Авито отключены.</p><button className="button button-secondary mt-4" onClick={() => setPage("products")}>Посмотреть воронку товаров</button></section> : client && <AvitoConnection client={client} ownerId={user.id} products={state.products} onProductsChanged={refreshData} onBusyChange={setAvitoBusy} />)}
@@ -299,5 +305,5 @@ function Analytics({ state }: { state: DemoState }) {
 function HelpDialog({ onClose, onCreate, demo }: { onClose: () => void; onCreate: () => void; demo: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
-  return <dialog ref={dialog} className="modal-panel help-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-header"><div><span className="pill">ЗНАКОМСТВО С ПРОЛОТОМ</span><h2>От идеи до «Продано»</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть подсказки"><X size={20} /></button></div><div className="modal-body help-steps">{[{ title: "Добавьте товар", text: "Загрузите фото, напишите пару слов и попробуйте локальную генерацию объявления." }, { title: "Проведите по этапам", text: "Перетаскивайте карточку по доске. На телефоне используйте меню этапов в правом нижнем углу карточки." }, { title: "Познакомьтесь с покупателем", text: "Создайте карточку покупателя, добавьте заметку и сохраните черновик ответа в диалоге." }, { title: "Отметьте продажу", text: "Переместите товар в «Продан»: выручка и аналитика пересчитаются автоматически." }].map((step, index) => <div className="help-step" key={step.title}><span>{index + 1}</span><div><h3>{step.title}</h3><p>{step.text}</p></div></div>)}<div className="demo-explanation">{demo ? "В демо используются вымышленные данные. Изменения действуют до перезагрузки страницы." : "Товары, покупатели и черновики сохраняются в вашем аккаунте Supabase. Для загрузки изменений с другого устройства нажмите «Обновить данные»."} Статусы покупателей и этапы товаров управляются отдельно. Публикация и отправка сообщений в Авито пока не подключены.</div></div><div className="modal-footer"><button className="button button-primary" onClick={onCreate}><Plus size={16} />Добавить первый товар</button></div></dialog>;
+  return <dialog ref={dialog} className="modal-panel help-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-header"><div><span className="pill">ЗНАКОМСТВО С ПРОЛОТОМ</span><h2>От идеи до «Продано»</h2></div><button className="icon-button" onClick={onClose} aria-label="Закрыть подсказки"><X size={20} /></button></div><div className="modal-body help-steps">{[{ title: "Добавьте товар", text: "Загрузите фото, напишите пару слов и попробуйте локальную генерацию объявления." }, { title: "Проведите по этапам", text: "Перетаскивайте карточку по доске. На телефоне используйте меню этапов в правом нижнем углу карточки." }, { title: "Познакомьтесь с покупателем", text: "Создайте карточку покупателя, добавьте заметку и сохраните черновик ответа в диалоге." }, { title: "Отметьте продажу", text: "Переместите товар в «Продан»: выручка и аналитика пересчитаются автоматически." }].map((step, index) => <div className="help-step" key={step.title}><span>{index + 1}</span><div><h3>{step.title}</h3><p>{step.text}</p></div></div>)}<div className="demo-explanation">{demo ? "В демо используются вымышленные данные. Изменения действуют до перезагрузки страницы." : "Товары, покупатели и черновики сохраняются в вашем аккаунте Supabase. Для загрузки изменений с другого устройства нажмите «Обновить данные»."} Статусы покупателей и этапы товаров управляются отдельно. Публикация объявлений пока не подключена. {demo ? "В демо отправка сообщений отключена." : "Для реальной переписки откройте «Сообщения → Авито — реальные сообщения»."}</div></div><div className="modal-footer"><button className="button button-primary" onClick={onCreate}><Plus size={16} />Добавить первый товар</button></div></dialog>;
 }

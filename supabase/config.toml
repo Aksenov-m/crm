@@ -2,3 +2,7 @@ project_id = "proaksenov-crm"
 
 [functions.avito]
 verify_jwt = true
+
+[functions.avito-webhook]
+# Avito has no Supabase session. The handler verifies a per-account secret URL.
+verify_jwt = false

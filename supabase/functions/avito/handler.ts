@@ -1,3 +1,5 @@
+import { cacheMessengerMessages, messengerStorage, signWebhook, webhookSecret, type MessengerBinding } from "../_shared/avito-messenger.ts";
+
 type Environment = (name: string) => string | undefined;
 type Account = { key: string; name: string; ownerId: string; clientId: string; clientSecret: string };
 type Json = Record<string, unknown>;
@@ -14,6 +16,24 @@ function object(value: unknown): Json {
   return value as Json;
 }
 function text(value: unknown, fallback = ""): string { return typeof value === "string" ? value : fallback; }
+function optionalObject(value: unknown): Json { return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {}; }
+function chatIdentifier(value: unknown): string {
+  // Avito documents chat_id as an opaque string. Do not restrict it to a
+  // guessed alphabet: real IDs may contain separators such as `:` or `/`.
+  // It is encoded only when inserted into the upstream URL below.
+  if (typeof value !== "string" || value.length === 0 || value.length > 200 || value.trim().length === 0 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new ApiError(400, "invalid_request", "Некорректный идентификатор чата.");
+  }
+  return value;
+}
+function messengerMessage(value: unknown) {
+  const row = object(value);
+  if (!text(row.id) || !Number.isFinite(row.created) || !["in", "out"].includes(text(row.direction))) throw new ApiError(502, "invalid_response", "Авито вернуло некорректное сообщение.");
+  const content = optionalObject(row.content);
+  const type = text(row.type, "unknown");
+  const labels: Record<string, string> = { image: "Фотография — откройте в Авито", voice: "Голосовое сообщение — откройте в Авито", deleted: "Сообщение удалено", call: "Звонок", location: "Геолокация", item: "Объявление", system: "Системное сообщение" };
+  return { id: text(row.id), text: type === "deleted" ? labels.deleted : text(content.text) || text(optionalObject(content.link).text) || labels[type] || "Вложение — откройте в Авито", type, created: Number(row.created), direction: text(row.direction) as "in" | "out", isRead: row.is_read === true };
+}
 function descriptionText(value: unknown): string { return typeof value === "string" ? value.trim().slice(0, 20000) : ""; }
 function identifier(value: unknown): string {
   if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
@@ -102,11 +122,23 @@ export function createAvitoHandler(dependencies: Dependencies) {
     catch { throw new ApiError(502, "invalid_response", "Сервис вернул неожиданный ответ. Повторите запрос позже."); }
   }
   function cacheKey(account: Account) { return `${account.key}:${account.clientId}:${account.clientSecret}`; }
-  function avitoError(status: number): ApiError {
+  function avitoError(status: number, upstreamMessage = ""): ApiError {
+    const detail = upstreamMessage.trim().slice(0, 300);
+    if (status === 402) return new ApiError(402, "avito_subscription", detail ? `Авито отклонил доступ к Messenger API: ${detail}` : "Для переписки нужен доступ к Messenger API в подписке Авито. Проверьте тариф основного аккаунта.");
     if (status === 401) return new ApiError(502, "avito_auth", "Авито отклонил авторизацию. Проверьте Client ID, Client Secret и тип доступа приложения.");
     if (status === 403) return new ApiError(403, "avito_access", "Авито не разрешил этот запрос. Проверьте права API и условия доступа вашего аккаунта.");
     if (status === 429) return new ApiError(429, "avito_rate_limit", "Достигнут лимит запросов Авито. Подождите и повторите позже.");
     return new ApiError(502, "avito_error", "Авито не выполнил запрос. Повторите позже; если ошибка сохраняется, проверьте доступ к API.");
+  }
+  async function upstreamError(response: Response): Promise<ApiError> {
+    let message = "";
+    try {
+      const body = optionalObject(await response.clone().json());
+      const nested = optionalObject(body.error);
+      const candidate = text(nested.message) || text(body.message);
+      if (candidate && !/access[_ -]?token|client[_ -]?secret|authorization/i.test(candidate)) message = candidate;
+    } catch { /* Use the safe status-based message below. */ }
+    return avitoError(response.status, message);
   }
   async function accessToken(account: Account): Promise<string> {
     const key = cacheKey(account);
@@ -131,26 +163,34 @@ export function createAvitoHandler(dependencies: Dependencies) {
     try { return await promise; } finally { pendingTokens.delete(key); }
   }
   async function avitoGet(account: Account, path: string): Promise<Json> {
+    return object(await avitoGetValue(account, path));
+  }
+  async function avitoGetValue(account: Account, path: string): Promise<unknown> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await accessToken(account);
       const response = await request(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
       if (response.status === 401 && attempt === 0) { tokens.delete(cacheKey(account)); continue; }
-      if (!response.ok) throw avitoError(response.status);
-      return json(response);
+      if (!response.ok) throw await upstreamError(response);
+      try { return await response.json(); }
+      catch { throw new ApiError(502, "invalid_response", "Авито вернуло некорректный ответ."); }
     }
     throw avitoError(401);
   }
-  async function avitoPost(account: Account, path: string, body: Json): Promise<void> {
+  async function avitoPost(account: Account, path: string, body?: Json): Promise<Response> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await accessToken(account);
+      const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+      const init: RequestInit = { method: "POST", headers };
+      if (body !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
       const response = await request(`${API}${path}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        ...init,
       });
       if (response.status === 401 && attempt === 0) { tokens.delete(cacheKey(account)); continue; }
-      if (!response.ok) throw avitoError(response.status);
-      return;
+      if (!response.ok) throw await upstreamError(response);
+      return response;
     }
     throw avitoError(401);
   }
@@ -160,6 +200,11 @@ export function createAvitoHandler(dependencies: Dependencies) {
       if (identifier(profile.id) === accountId) return candidate;
     }
     throw new ApiError(403, "account_not_allowed", "Связанный аккаунт Авито больше не доступен этому пользователю CRM.");
+  }
+  async function cacheHistory(binding: MessengerBinding, chatId: string, messages: unknown[]): Promise<string | undefined> {
+    if (!env("SUPABASE_SERVICE_ROLE_KEY")) return undefined;
+    try { await cacheMessengerMessages(env, dependencies.fetch, binding, chatId, messages); }
+    catch { return "Сообщения получены из Авито, но копия в CRM не сохранена. Проверьте SQL-файл 009 и Supabase."; }
   }
   async function boundedImageBody(response: Response): Promise<Uint8Array> {
     const maxBytes = 5 * 1024 * 1024;
@@ -235,6 +280,109 @@ export function createAvitoHandler(dependencies: Dependencies) {
       if (input.action === "profile") {
         const data = await avitoGet(account, "/core/v1/accounts/self");
         return respond(200, { profile: { id: identifier(data.id), name: text(data.name, account.name), profileUrl: avitoUrl(data.profile_url) } });
+      }
+      if (["webhook_status", "enable_webhook"].includes(text(input.action))) {
+        let secret: string;
+        try { secret = webhookSecret(env); }
+        catch { throw new ApiError(503, "webhook_configuration", "Добавьте AVITO_WEBHOOK_SECRET (64 случайных шестнадцатеричных символа) в секреты Supabase и выполните SQL-файл 009."); }
+        const profile = await avitoGet(account, "/core/v1/accounts/self");
+        const accountId = identifier(profile.id);
+        const binding = { ...account, accountId };
+        const filter = new URLSearchParams({ owner_id: `eq.${ownerId}`, account_key: `eq.${account.key}`, avito_user_id: `eq.${accountId}` });
+        if (input.action === "enable_webhook") {
+          // Establish the binding BEFORE Avito can deliver an event or a probe.
+          try { await cacheMessengerMessages(env, dependencies.fetch, binding, "_registration", []); }
+          catch { throw new ApiError(503, "webhook_storage", "Не готово хранилище переписки. Выполните docs/009_create_avito_messenger.sql в Supabase."); }
+          const token = await signWebhook(secret, binding);
+          const callback = `${config.url}/functions/v1/avito-webhook/${account.key}/${accountId}/${token}`;
+          const probe = await request(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+          if (!probe.ok) throw new ApiError(503, "webhook_unavailable", "Приёмник webhook недоступен. Опубликуйте avito-webhook с выключенной проверкой JWT; проверка секретного адреса остаётся в коде.");
+          const subscriptions = await json(await avitoPost(account, "/messenger/v1/subscriptions"));
+          if (!Array.isArray(subscriptions.subscriptions)) throw new ApiError(502, "invalid_response", "Авито не подтвердило список webhook-подписок.");
+          const exists = subscriptions.subscriptions.some((value) => { const row = optionalObject(value); return row.url === callback && String(row.version) === "3"; });
+          if (!exists) {
+            const registration = await json(await avitoPost(account, "/messenger/v3/webhook", { url: callback }));
+            if (registration.ok !== true) throw new ApiError(502, "webhook_registration", "Авито не подтвердило регистрацию webhook.");
+          }
+          try {
+            await messengerStorage(env, dependencies.fetch, `avito_messenger_accounts?${filter}`, { method: "PATCH", body: JSON.stringify({ webhook_enabled: true, registered_at: new Date(now()).toISOString() }), headers: { Prefer: "return=minimal" } });
+          } catch { throw new ApiError(503, "webhook_storage", "Webhook зарегистрирован, но статус не сохранён. Повторите подключение: существующая подписка будет проверена."); }
+        }
+        try {
+          const rows = await messengerStorage(env, dependencies.fetch, `avito_messenger_accounts?${filter}&select=webhook_enabled,last_event_at`);
+          const row = Array.isArray(rows) ? optionalObject(rows[0]) : {};
+          return respond(200, { enabled: row.webhook_enabled === true, accountId, lastEventAt: typeof row.last_event_at === "string" ? row.last_event_at : null });
+        } catch { throw new ApiError(503, "webhook_storage", "Не удалось проверить webhook. Проверьте SQL-файл 009 и серверные настройки Supabase."); }
+      }
+      if (["chats", "chat_messages", "send_message", "read_chat"].includes(text(input.action))) {
+        const offset = input.offset ?? 0;
+        if (!Number.isInteger(offset) || Number(offset) < 0 || Number(offset) > 1000) throw new ApiError(400, "invalid_request", "Некорректная страница переписки.");
+        const chatId = input.action === "chats" ? "" : chatIdentifier(input.chatId);
+        const messageText = text(input.text).trim();
+        const readIds = input.messageIds ?? [];
+        if (input.action === "read_chat" && (!Array.isArray(readIds) || readIds.length > 100 || readIds.some((id) => typeof id !== "string" || !id || id.length > 200))) throw new ApiError(400, "invalid_request", "Некорректные идентификаторы прочитанных сообщений.");
+        if (input.action === "send_message" && (!messageText || messageText.length > 1000)) throw new ApiError(400, "invalid_request", "Сообщение должно содержать от 1 до 1000 символов.");
+        // Never trust an account ID supplied by the browser.
+        const profile = await avitoGet(account, "/core/v1/accounts/self");
+        const accountId = identifier(profile.id);
+        const binding = { ...account, accountId };
+        const path = `/messenger/v1/accounts/${accountId}/chats/${encodeURIComponent(chatId)}`;
+        if (input.action === "chats") {
+          const data = await avitoGet(account, `/messenger/v2/accounts/${accountId}/chats?limit=50&offset=${offset}&chat_types=u2i,u2u`);
+          if (!Array.isArray(data.chats)) throw new ApiError(502, "invalid_response", "Авито вернуло некорректный список чатов.");
+          const chats = data.chats.map((value) => {
+            const row = object(value);
+            if (!text(row.id)) throw new ApiError(502, "invalid_response", "Авито вернуло чат без идентификатора.");
+            const users = Array.isArray(row.users) ? row.users.map(optionalObject).filter((user) => String(user.id) !== accountId) : [];
+            const context = optionalObject(optionalObject(row.context).value);
+            return { id: text(row.id), name: users.map((user) => text(user.name)).filter(Boolean).join(", ") || "Собеседник Авито", itemTitle: text(context.title), itemUrl: avitoUrl(context.url), lastMessage: row.last_message ? messengerMessage(row.last_message) : null };
+          });
+          return respond(200, { chats, offset, hasMore: chats.length === 50 && Number(offset) < 1000 });
+        }
+        if (input.action === "chat_messages") {
+          const data = await avitoGetValue(account, `/messenger/v3/accounts/${accountId}/chats/${encodeURIComponent(chatId)}/messages/?limit=50&offset=${offset}`);
+          const wrapper = optionalObject(data);
+          const messages = Array.isArray(data) ? data
+            : Array.isArray(wrapper.messages) ? wrapper.messages
+            : Array.isArray(wrapper.resources) ? wrapper.resources
+            : Array.isArray(wrapper.items) ? wrapper.items
+            : Array.isArray(wrapper.data) ? wrapper.data
+            : null;
+          if (!messages) {
+            const keys = Object.keys(wrapper).filter((key) => /^[a-zA-Z][a-zA-Z0-9_]{0,40}$/.test(key)).slice(0, 8);
+            const suffix = keys.length ? ` Формат ответа содержит поля: ${keys.join(", ")}.` : "";
+            throw new ApiError(502, "invalid_response", `Авито вернуло некорректную историю сообщений.${suffix}`);
+          }
+          const normalized = messages.map(messengerMessage);
+          const warning = await cacheHistory(binding, chatId, normalized);
+          return respond(200, { messages: normalized, offset, hasMore: messages.length === 50 && Number(offset) < 1000, ...(warning ? { warning } : {}) });
+        }
+        if (input.action === "read_chat") {
+          // chatRead has no request body in the Avito contract.
+          await avitoPost(account, `${path}/read`);
+          if (env("SUPABASE_SERVICE_ROLE_KEY") && readIds.length) {
+            try {
+              await messengerStorage(env, dependencies.fetch, "rpc/avito_mark_cached_read", { method: "POST", body: JSON.stringify({ p_owner: ownerId, p_key: account.key, p_account: accountId, p_chat: chatId, p_ids: readIds }) });
+            } catch { /* Avito already confirmed the receipt; do not turn it into a false failure. */ }
+          }
+          return respond(200, { read: true });
+        }
+        // Do not retry a send: a timeout can mean the message was already accepted.
+        const token = await accessToken(account);
+        let response: Response;
+        try {
+          response = await request(`${API}${path}/messages`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ type: "text", message: { text: messageText } }) });
+        } catch { throw new ApiError(502, "send_uncertain", "Не удалось подтвердить отправку. Обновите переписку и проверьте сообщение в Авито перед повтором."); }
+        if (response.status === 401) tokens.delete(cacheKey(account));
+        if (!response.ok) {
+          if (response.status >= 500) throw new ApiError(502, "send_uncertain", "Авито не подтвердило отправку. Проверьте переписку перед повтором.");
+          throw await upstreamError(response);
+        }
+        let message: ReturnType<typeof messengerMessage>;
+        try { message = messengerMessage(await response.json()); }
+        catch { throw new ApiError(502, "send_uncertain", "Сообщение могло отправиться, но ответ не распознан. Проверьте переписку перед повтором."); }
+        const warning = await cacheHistory(binding, chatId, [message]);
+        return respond(200, { message, ...(warning ? { warning } : {}) });
       }
       if (input.action === "image") {
         const source = avitoImageUrl(input.imageUrl);

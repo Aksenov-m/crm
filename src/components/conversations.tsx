@@ -74,7 +74,7 @@ export function Conversations({ products, buyers, messages, selectedBuyerId, onS
         </div>
       </div>
 
-      <p className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">Отправка в Авито ещё не подключена. Черновики сохраняются в CRM и не отправляются покупателю.</p>
+      <p className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">Это черновики CRM: они сохраняются отдельно и не отправляются покупателю.</p>
 
       <div className="grid overflow-hidden rounded-2xl border border-slate-200 bg-white md:h-[610px] md:grid-cols-[300px_minmax(0,1fr)] lg:grid-cols-[330px_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col border-b border-slate-200 md:border-r md:border-b-0" aria-label="Список диалогов">

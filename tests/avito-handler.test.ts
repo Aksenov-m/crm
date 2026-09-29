@@ -13,6 +13,140 @@ const envDefaults: Record<string, string> = {
   AVITO_CRM_OWNER_ID: OWNER, AVITO_CLIENT_ID: "test-client", AVITO_CLIENT_SECRET: SECRET,
 };
 const response = (body: unknown, status = 200) => Response.json(body, { status });
+const chatMessage = { id: "msg-1", type: "text", content: { text: "Здравствуйте" }, direction: "in", created: 1700000000, is_read: false };
+function messengerFixture(api: (url: string, init: RequestInit) => Response | Promise<Response>, options: { owner?: string } = {}) {
+  return fixture({ ...options, api: (url, init) => {
+    if (url.endsWith("/token")) return response({ access_token: TOKEN, token_type: "Bearer", expires_in: 86400 });
+    if (url.endsWith("/accounts/self")) return response({ id: 12345 });
+    return api(url, init);
+  } });
+}
+
+test("messenger reads the V3 array, scopes account server-side and maps deleted/unknown content", async () => {
+  const f = messengerFixture((url) => {
+    assert.equal(url, "https://api.avito.ru/messenger/v3/accounts/12345/chats/chat%3Aabc%2F123/messages/?limit=50&offset=50");
+    return response([chatMessage, { ...chatMessage, id: "deleted", type: "deleted", content: { text: "Do not show deleted content" } }, { ...chatMessage, id: "voice", type: "voice", content: {} }]);
+  });
+  const result = await f.call({ action: "chat_messages", accountKey: "main", accountId: "99999", chatId: "chat:abc/123", offset: 50 });
+  assert.equal(result.status, 200);
+  const data = await result.json();
+  assert.equal(data.messages[0].text, "Здравствуйте");
+  assert.equal(data.messages[0].isRead, false);
+  assert.equal(data.messages[1].text, "Сообщение удалено");
+  assert.match(data.messages[2].text, /Голосовое/);
+  assert.equal(data.hasMore, false);
+  assert.equal(f.requests.filter(({ url }) => url.endsWith("/read")).length, 0);
+});
+
+test("messenger also accepts the wrapped history shape returned by some Avito responses", async () => {
+  const f = messengerFixture((url) => {
+    assert.match(url, /messenger\/v3\/accounts\/12345\/chats\/chat-1\/messages/);
+    return response({ messages: [chatMessage] });
+  });
+  const result = await f.call({ action: "chat_messages", accountKey: "main", chatId: "chat-1" });
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).messages[0].text, "Здравствуйте");
+});
+
+test("messenger accepts an items wrapper and reports only safe response keys for an unknown shape", async () => {
+  const wrapped = messengerFixture(() => response({ items: [chatMessage] }));
+  assert.equal((await wrapped.call({ action: "chat_messages", accountKey: "main", chatId: "chat-1" })).status, 200);
+  const unknown = messengerFixture(() => response({ result: { secret: "hidden" }, trace_id: "trace-1" }));
+  const result = await unknown.call({ action: "chat_messages", accountKey: "main", chatId: "chat-1" });
+  assert.equal(result.status, 502);
+  const body = await result.json();
+  assert.match(body.message, /result, trace_id/);
+  assert.ok(!body.message.includes("hidden"));
+});
+
+test("messenger chat list omits own profile and unsafe links", async () => {
+  const f = messengerFixture((url) => {
+    assert.match(url, /messenger\/v2\/accounts\/12345\/chats\?limit=50&offset=0&chat_types=u2i,u2u$/);
+    return response({ chats: [{ id: "chat-1", users: [{ id: 12345, name: "Я" }, { id: 42, name: "Покупатель" }], context: { value: { title: "Стол", url: "javascript:alert(1)" } }, last_message: chatMessage }] });
+  });
+  const data = await (await f.call({ action: "chats", accountKey: "main" })).json();
+  assert.equal(data.chats[0].name, "Покупатель");
+  assert.equal(data.chats[0].itemTitle, "Стол");
+  assert.equal(data.chats[0].itemUrl, null);
+});
+
+test("messenger sends text once, returns the confirmed message and reads via separate POST", async () => {
+  const f = messengerFixture((url, init) => {
+    assert.equal(init.method, "POST");
+    if (url.endsWith("/read")) return response({ ok: true });
+    assert.equal(url, "https://api.avito.ru/messenger/v1/accounts/12345/chats/chat-1/messages");
+    assert.deepEqual(JSON.parse(String(init.body)), { type: "text", message: { text: "Да, в наличии" } });
+    return response({ ...chatMessage, direction: "out", content: { text: "Да, в наличии" } });
+  });
+  const result = await f.call({ action: "send_message", accountKey: "main", chatId: "chat-1", text: " Да, в наличии " });
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).message.direction, "out");
+  assert.equal((await f.call({ action: "read_chat", accountKey: "main", chatId: "chat-1" })).status, 200);
+  const readRequest = f.requests.find(({ url }) => url.endsWith("/read"));
+  assert.equal(readRequest?.init.body, undefined);
+  assert.equal((readRequest?.init.headers as Record<string, string>)["Content-Type"], undefined);
+  assert.equal(f.requests.filter(({ url }) => url.endsWith("/messages")).length, 1);
+});
+
+test("messenger validates payloads before calling Avito and denies other owners", async () => {
+  const f = messengerFixture(() => { throw new Error("No API calls expected"); });
+  for (const body of [
+    { action: "send_message", chatId: "chat-1", text: " " },
+    { action: "send_message", chatId: "chat-1", text: "x".repeat(1001) },
+    { action: "chat_messages", chatId: "\u0000" },
+    { action: "chats", offset: 1001 },
+    { action: "chats", offset: -1 },
+  ]) assert.equal((await f.call({ ...body, accountKey: "main" })).status, 400);
+  assert.ok(f.requests.every(({ url }) => url.startsWith(SB)));
+  const other = messengerFixture(() => { throw new Error("Must not call Avito"); }, { owner: OTHER });
+  assert.equal((await other.call({ action: "send_message", accountKey: "main", chatId: "chat-1", text: "Hi" })).status, 403);
+});
+
+test("chatRead uses the documented bodyless POST with encoded ID and confirms only a successful status", async () => {
+  for (const status of [200, 402, 403, 429, 500]) {
+    const f = messengerFixture((url, init) => {
+      assert.equal(url, "https://api.avito.ru/messenger/v1/accounts/12345/chats/chat%3Aabc%2F123/read");
+      assert.equal(init.method, "POST");
+      assert.equal(init.body, undefined);
+      assert.equal(new Headers(init.headers).has("Content-Type"), false);
+      return status === 200 ? response({ ok: true }) : response({ code: status, message: "Отказ API" }, status);
+    });
+    const result = await f.call({ action: "read_chat", accountKey: "main", chatId: "chat:abc/123" });
+    const body = await result.json();
+    if (status === 200) assert.deepEqual(body, { read: true });
+    else {
+      assert.equal(result.status, status === 500 ? 502 : status);
+      assert.equal(body.read, undefined);
+      assert.ok(body.error);
+    }
+    assert.equal(f.requests.filter(({ url }) => url.endsWith("/read")).length, 1);
+  }
+});
+
+test("chatRead refreshes an expired token once before retrying the idempotent receipt", async () => {
+  let reads = 0;
+  const f = messengerFixture(() => ++reads === 1 ? response({}, 401) : response({ ok: true }));
+  const result = await f.call({ action: "read_chat", accountKey: "main", chatId: "chat-1" });
+  assert.deepEqual(await result.json(), { read: true });
+  assert.equal(reads, 2);
+  assert.equal(f.requests.filter(({ url }) => url.endsWith("/token")).length, 2);
+});
+
+test("messenger surfaces subscription errors and never retries uncertain sends", async () => {
+  const denied = messengerFixture(() => response({ error: { code: 402, message: "Messenger API недоступен для текущей подписки" } }, 402));
+  assert.equal((await denied.call({ action: "chats", accountKey: "main" })).status, 402);
+  assert.match(await (await denied.call({ action: "chats", accountKey: "main" })).text(), /Messenger API недоступен/);
+  for (const mode of ["network", "server", "malformed", "unauthorized"]) {
+    const f = messengerFixture(() => {
+      if (mode === "network") throw new Error("Disconnected");
+      return response({}, mode === "server" ? 500 : mode === "unauthorized" ? 401 : 200);
+    });
+    const result = await f.call({ action: "send_message", accountKey: "main", chatId: "chat-1", text: "Hi" });
+    assert.equal(result.status, 502);
+    assert.equal(f.requests.filter(({ url }) => url.endsWith("/messages")).length, 1);
+    if (mode !== "unauthorized") assert.equal((await result.json()).error, "send_uncertain");
+  }
+});
 function fixture(options: { owner?: string; status?: number; env?: Record<string, string>; api?: (url: string, init: RequestInit) => Response | Promise<Response>; now?: () => number } = {}) {
   const requests: Array<{ url: string; init: RequestInit }> = [];
   const handler = createAvitoHandler({
