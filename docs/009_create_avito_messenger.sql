@@ -70,8 +70,8 @@ begin
   for msg in select value from jsonb_array_elements(p_messages) loop
     if jsonb_typeof(msg) <> 'object' or jsonb_typeof(msg->'id') is distinct from 'string'
       or length(msg->>'id') not between 1 and 200 or jsonb_typeof(msg->'text') is distinct from 'string'
-      or length(msg->>'text') > 20000 or msg->>'direction' not in ('in','out')
-      or jsonb_typeof(msg->'isRead') is distinct from 'boolean' or (msg->>'type') !~ '^[a-zA-Z_]{1,40}$'
+      or length(msg->>'text') > 20000 or jsonb_typeof(msg->'direction') is distinct from 'string' or msg->>'direction' not in ('in','out')
+      or jsonb_typeof(msg->'isRead') is distinct from 'boolean' or jsonb_typeof(msg->'type') is distinct from 'string' or (msg->>'type') !~ '^[a-zA-Z_]{1,40}$'
       or jsonb_typeof(msg->'created') is distinct from 'number' or (msg->>'created') !~ '^[0-9]{1,13}$' then
       raise exception 'Invalid normalized message';
     end if;
@@ -81,6 +81,7 @@ begin
     select message into previous from public.avito_messenger_messages
       where owner_id = p_owner and account_key = p_key and avito_user_id = p_account and chat_id = p_chat and message_id = msg->>'id';
     merged := case when previous->>'type' = 'deleted' then previous else msg end;
+    if previous is not null then merged := jsonb_set(merged, '{created}', previous->'created'); end if;
     merged := jsonb_set(merged, '{isRead}', to_jsonb(coalesce((previous->>'isRead')::boolean, false) or (msg->>'isRead')::boolean));
     insert into public.avito_messenger_messages(owner_id,account_key,avito_user_id,chat_id,message_id,created,message)
       values(p_owner,p_key,p_account,p_chat,msg->>'id',(merged->>'created')::bigint,merged)

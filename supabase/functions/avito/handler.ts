@@ -1,12 +1,42 @@
-import { cacheMessengerMessages, messengerStorage, signWebhook, webhookSecret, type MessengerBinding } from "../_shared/avito-messenger.ts";
+import { cacheMessengerMessages, messengerStorage, messengerStorageConfigured, signWebhook, webhookSecret, type MessengerBinding } from "../_shared/avito-messenger.ts";
 
 type Environment = (name: string) => string | undefined;
 type Account = { key: string; name: string; ownerId: string; clientId: string; clientSecret: string };
 type Json = Record<string, unknown>;
 type Dependencies = { env: Environment; fetch: typeof fetch; now?: () => number };
+type StoredOAuthToken = { accessToken: string; refreshToken: string; expiresAt: number; tokenType: string };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const API = "https://api.avito.ru";
 const TIMEOUT = 15000;
+const PRODUCTION_OAUTH_REDIRECT_URI = "https://proaksenov.ru/api/avito/callback";
+const PRODUCTION_APP_ORIGIN = "https://proaksenov.ru";
+const LOCAL_APP_ORIGIN = "http://127.0.0.1:3000";
+const OAUTH_SCOPES = ["items:info", "messenger:read", "messenger:write", "user:read"];
+
+function oauthReturnOriginForOrigin(origin: string | null, allowedOrigins: string[]): string {
+  return origin === LOCAL_APP_ORIGIN && allowedOrigins.includes(origin) ? LOCAL_APP_ORIGIN : PRODUCTION_APP_ORIGIN;
+}
+
+function isOAuthRedirectUri(value: string): boolean {
+  return value === PRODUCTION_OAUTH_REDIRECT_URI;
+}
+
+function oauthState(returnOrigin: string): string {
+  const nonce = new Uint8Array(32);
+  crypto.getRandomValues(nonce);
+  return base64Url(new TextEncoder().encode(JSON.stringify({ nonce: base64Url(nonce), return_origin: returnOrigin })));
+}
+
+function oauthReturnOriginFromState(state: string): string {
+  try {
+    const padded = state.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (state.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+    const payload = optionalObject(JSON.parse(new TextDecoder().decode(bytes)));
+    return text(payload.return_origin) === LOCAL_APP_ORIGIN ? LOCAL_APP_ORIGIN : PRODUCTION_APP_ORIGIN;
+  } catch {
+    return PRODUCTION_APP_ORIGIN;
+  }
+}
 
 class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -17,6 +47,9 @@ function object(value: unknown): Json {
 }
 function text(value: unknown, fallback = ""): string { return typeof value === "string" ? value : fallback; }
 function optionalObject(value: unknown): Json { return value && typeof value === "object" && !Array.isArray(value) ? value as Json : {}; }
+function hex(bytes: Uint8Array): string { return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(""); }
+function base64Url(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); }
+async function sha256(value: string): Promise<string> { return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))); }
 function chatIdentifier(value: unknown): string {
   // Avito documents chat_id as an opaque string. Do not restrict it to a
   // guessed alphabet: real IDs may contain separators such as `:` or `/`.
@@ -113,8 +146,8 @@ export function createAvitoHandler(dependencies: Dependencies) {
   const tokens = new Map<string, { value: string; expiresAt: number }>();
   const pendingTokens = new Map<string, Promise<string>>();
 
-  async function request(url: string, init: RequestInit): Promise<Response> {
-    try { return await dependencies.fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(TIMEOUT) }); }
+  async function request(url: string, init: RequestInit, timeout = TIMEOUT): Promise<Response> {
+    try { return await dependencies.fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(timeout) }); }
     catch { throw new ApiError(502, "network_error", "Сервис недоступен или не ответил вовремя. Проверьте подключение и повторите запрос."); }
   }
   async function json(response: Response): Promise<Json> {
@@ -140,6 +173,108 @@ export function createAvitoHandler(dependencies: Dependencies) {
     } catch { /* Use the safe status-based message below. */ }
     return avitoError(response.status, message);
   }
+  async function storedOAuthToken(account: Account): Promise<StoredOAuthToken | null> {
+    if (!messengerStorageConfigured(env)) return null;
+    try {
+      const rows = await messengerStorage(env, dependencies.fetch, `avito_oauth_tokens?owner_id=eq.${account.ownerId}&account_key=eq.${account.key}&select=access_token,refresh_token,expires_at,token_type`);
+      const row = Array.isArray(rows) ? optionalObject(rows[0]) : {};
+      const expiresAt = Date.parse(text(row.expires_at));
+      if (!text(row.access_token) || !text(row.refresh_token) || !Number.isFinite(expiresAt)) return null;
+      return { accessToken: text(row.access_token), refreshToken: text(row.refresh_token), expiresAt, tokenType: text(row.token_type, "Bearer") };
+    } catch {
+      // This keeps existing client_credentials deployments working until SQL 011 is run.
+      return null;
+    }
+  }
+  async function saveOAuthToken(account: Account, data: Json, previousRefreshToken = ""): Promise<StoredOAuthToken> {
+    const accessToken = text(data.access_token);
+    const refreshToken = text(data.refresh_token, previousRefreshToken);
+    const tokenType = text(data.token_type, "Bearer");
+    const expiresIn = Number(data.expires_in);
+    if (!accessToken || !refreshToken || tokenType.toLowerCase() !== "bearer" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+      throw new ApiError(502, "avito_auth", "Авито вернул неполный OAuth-токен. Подключите аккаунт ещё раз.");
+    }
+    const token: StoredOAuthToken = { accessToken, refreshToken, expiresAt: now() + expiresIn * 1000, tokenType };
+    await messengerStorage(env, dependencies.fetch, "avito_oauth_tokens?on_conflict=owner_id,account_key", {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ owner_id: account.ownerId, account_key: account.key, access_token: token.accessToken, refresh_token: token.refreshToken, token_type: token.tokenType, expires_at: new Date(token.expiresAt).toISOString(), scope: text(data.scope) || null }),
+    });
+    return token;
+  }
+  async function oauthTokenError(response: Response): Promise<ApiError> {
+    let detail = "";
+    try {
+      const body = optionalObject(await response.clone().json());
+      const value = text(body.error_description) || text(body.error);
+      if (value && !/access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|authorization/i.test(value)) detail = value;
+    } catch { /* Use the safe generic message below. */ }
+    return new ApiError(502, "avito_auth", detail ? `Авито не подтвердило OAuth-подключение: ${detail}` : "Авито не подтвердило OAuth-подключение. Запустите подключение ещё раз.");
+  }
+  async function refreshOAuthToken(account: Account, token: StoredOAuthToken): Promise<string> {
+    const response = await request(`${API}/token`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", client_id: account.clientId, client_secret: account.clientSecret, refresh_token: token.refreshToken }),
+    });
+    if (!response.ok) throw await oauthTokenError(response);
+    const data = await json(response);
+    if (text(data.error)) throw await oauthTokenError(response);
+    const refreshed = await saveOAuthToken(account, data, token.refreshToken);
+    tokens.set(cacheKey(account), { value: refreshed.accessToken, expiresAt: Math.max(now(), refreshed.expiresAt - 60000) });
+    return refreshed.accessToken;
+  }
+  async function beginOAuth(account: Account, returnOrigin: string) {
+    if (!messengerStorageConfigured(env)) throw new ApiError(503, "oauth_storage", "Для OAuth-подключения выполните SQL-файл 011 и настройте серверный ключ Supabase в Edge Functions.");
+    const state = oauthState(returnOrigin);
+    const redirectUri = PRODUCTION_OAUTH_REDIRECT_URI;
+    const stateHash = await sha256(state);
+    try {
+      await messengerStorage(env, dependencies.fetch, `avito_oauth_states?expires_at=lt.${encodeURIComponent(new Date(now()).toISOString())}`, { method: "DELETE" });
+      await messengerStorage(env, dependencies.fetch, "avito_oauth_states", {
+        method: "POST",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ owner_id: account.ownerId, account_key: account.key, state_hash: stateHash, redirect_uri: redirectUri, expires_at: new Date(now() + 10 * 60 * 1000).toISOString() }),
+      });
+    } catch { throw new ApiError(503, "oauth_storage", "Не удалось сохранить состояние OAuth. Выполните SQL-файл 011 в Supabase и повторите подключение."); }
+    const url = new URL("https://avito.ru/oauth");
+    url.searchParams.set("client_id", account.clientId);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", OAUTH_SCOPES.join(" "));
+    url.searchParams.set("state", state);
+    return { authorizeUrl: url.href, redirectUri };
+  }
+  async function consumeOAuthState(ownerId: string, state: string): Promise<{ accountKey: string; redirectUri: string; returnOrigin: string }> {
+    if (!/^[A-Za-z0-9_-]{32,200}$/.test(state)) throw new ApiError(400, "oauth_state", "Некорректное состояние OAuth. Запустите подключение Авито ещё раз.");
+    try {
+      const rows = await messengerStorage(env, dependencies.fetch, "rpc/avito_consume_oauth_state", { method: "POST", body: JSON.stringify({ p_owner: ownerId, p_state_hash: await sha256(state) }) });
+      const row = Array.isArray(rows) ? optionalObject(rows[0]) : {};
+      const accountKey = text(row.account_key);
+      const redirectUri = text(row.redirect_uri);
+      if (!accountKey || !isOAuthRedirectUri(redirectUri)) throw new ApiError(400, "oauth_state", "Ссылка OAuth устарела. Запустите подключение Авито ещё раз.");
+      return { accountKey, redirectUri, returnOrigin: oauthReturnOriginFromState(state) };
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(503, "oauth_storage", "Не удалось проверить состояние OAuth. Выполните SQL-файл 011 в Supabase и повторите подключение.");
+    }
+  }
+  async function completeOAuth(account: Account, code: string, redirectUri: string): Promise<void> {
+    if (!code || code.length > 4096) throw new ApiError(400, "oauth_code", "Авито вернул некорректный код авторизации.");
+    const response = await request(`${API}/token`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", client_id: account.clientId, client_secret: account.clientSecret, code, redirect_uri: redirectUri }),
+    });
+    if (!response.ok) throw await oauthTokenError(response);
+    const data = await json(response);
+    if (text(data.error)) throw new ApiError(502, "avito_auth", "Авито не подтвердило OAuth-подключение. Запустите подключение ещё раз.");
+    try {
+      const token = await saveOAuthToken(account, data);
+      tokens.set(cacheKey(account), { value: token.accessToken, expiresAt: Math.max(now(), token.expiresAt - 60000) });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(503, "oauth_storage", "Авито подтвердило доступ, но сохранить токены не удалось. Проверьте SQL-файл 011 в Supabase.");
+    }
+  }
   async function accessToken(account: Account): Promise<string> {
     const key = cacheKey(account);
     const cached = tokens.get(key);
@@ -147,12 +282,25 @@ export function createAvitoHandler(dependencies: Dependencies) {
     const pending = pendingTokens.get(key);
     if (pending) return pending;
     const promise = (async () => {
+      const oauth = await storedOAuthToken(account);
+      if (oauth) {
+        if (oauth.expiresAt > now() + 60000) {
+          tokens.set(key, { value: oauth.accessToken, expiresAt: oauth.expiresAt - 60000 });
+          return oauth.accessToken;
+        }
+        return refreshOAuthToken(account, oauth);
+      }
       const response = await request(`${API}/token`, {
         method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ grant_type: "client_credentials", client_id: account.clientId, client_secret: account.clientSecret }),
       });
       if (!response.ok) throw response.status === 400 ? avitoError(401) : avitoError(response.status);
       const data = await json(response);
+      if (text(data.error)) {
+        // Avito can return OAuth errors with HTTP 200. Do not turn that into
+        // a misleading "invalid token" response or silently serve one cache row.
+        throw new ApiError(502, "avito_auth", "Приложение Авито не разрешает авторизацию client_credentials. Проверьте тип доступа приложения и ключи Авито.");
+      }
       const expires = Number(data.expires_in);
       if (!text(data.access_token) || !Number.isFinite(expires) || expires <= 0 || text(data.token_type).toLowerCase() !== "bearer") throw new ApiError(502, "invalid_token", "Авито вернул некорректный ответ авторизации.");
       if (tokens.size > 40) tokens.clear();
@@ -202,7 +350,7 @@ export function createAvitoHandler(dependencies: Dependencies) {
     throw new ApiError(403, "account_not_allowed", "Связанный аккаунт Авито больше не доступен этому пользователю CRM.");
   }
   async function cacheHistory(binding: MessengerBinding, chatId: string, messages: unknown[]): Promise<string | undefined> {
-    if (!env("SUPABASE_SERVICE_ROLE_KEY")) return undefined;
+    if (!messengerStorageConfigured(env)) return "Серверная функция не видит секретный ключ Supabase для сохранения переписки. Проверьте настройки Edge Functions.";
     try { await cacheMessengerMessages(env, dependencies.fetch, binding, chatId, messages); }
     catch { return "Сообщения получены из Авито, но копия в CRM не сохранена. Проверьте SQL-файл 009 и Supabase."; }
   }
@@ -256,6 +404,7 @@ export function createAvitoHandler(dependencies: Dependencies) {
   return async (req: Request): Promise<Response> => {
     const origin = req.headers.get("origin");
     const allowedOrigins = (env("AVITO_ALLOWED_ORIGINS") || "https://proaksenov.ru").split(",").map((value) => value.trim());
+    const oauthReturnOrigin = oauthReturnOriginForOrigin(origin, allowedOrigins);
     const cors: Record<string, string> = { "Access-Control-Allow-Headers": "authorization, apikey, x-client-info, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS", Vary: "Origin", "Cache-Control": "no-store" };
     if (origin && allowedOrigins.includes(origin)) cors["Access-Control-Allow-Origin"] = origin;
     const respond = (status: number, data: unknown) => Response.json(data, { status, headers: cors });
@@ -269,14 +418,23 @@ export function createAvitoHandler(dependencies: Dependencies) {
       const accounts = accountsFromEnv(env).filter((account) => account.ownerId === ownerId);
       if (!accounts.length) throw new ApiError(403, "account_not_allowed", "Для этого пользователя CRM не настроен аккаунт Авито.");
       const bodyText = await req.text();
-      if (bodyText.length > 4096) throw new ApiError(413, "invalid_request", "Запрос слишком большой.");
+      if (bodyText.length > 65536) throw new ApiError(413, "invalid_request", "Запрос слишком большой.");
       let input: Json;
       try { input = object(JSON.parse(bodyText)); } catch { throw new ApiError(400, "invalid_request", "Некорректный запрос."); }
       if (input.action === "accounts") return respond(200, { accounts: accounts.map(({ key, name }) => ({ key, name })) });
+      if (input.action === "oauth_callback") {
+        const callbackState = await consumeOAuthState(ownerId, text(input.state));
+        if (text(input.error)) throw new ApiError(400, "oauth_denied", "Подключение Авито отменено. Разрешите доступ и повторите подключение.");
+        const account = accounts.find(({ key }) => key === callbackState.accountKey);
+        if (!account) throw new ApiError(403, "account_not_allowed", "Аккаунт Авито больше не настроен для этого пользователя CRM.");
+        await completeOAuth(account, text(input.code), callbackState.redirectUri);
+        return respond(200, { connected: true, accountKey: account.key, returnOrigin: callbackState.returnOrigin });
+      }
       const account = input.action === "update_price"
         ? await accountByAvitoId(accounts, identifier(input.accountId))
         : accounts.find(({ key }) => key === input.accountKey);
       if (!account) throw new ApiError(403, "account_not_allowed", "Аккаунт Авито недоступен этому пользователю.");
+      if (input.action === "oauth_start") return respond(200, await beginOAuth(account, oauthReturnOrigin));
       if (input.action === "profile") {
         const data = await avitoGet(account, "/core/v1/accounts/self");
         return respond(200, { profile: { id: identifier(data.id), name: text(data.name, account.name), profileUrl: avitoUrl(data.profile_url) } });
@@ -295,8 +453,9 @@ export function createAvitoHandler(dependencies: Dependencies) {
           catch { throw new ApiError(503, "webhook_storage", "Не готово хранилище переписки. Выполните docs/009_create_avito_messenger.sql в Supabase."); }
           const token = await signWebhook(secret, binding);
           const callback = `${config.url}/functions/v1/avito-webhook/${account.key}/${accountId}/${token}`;
-          const probe = await request(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-          if (!probe.ok) throw new ApiError(503, "webhook_unavailable", "Приёмник webhook недоступен. Опубликуйте avito-webhook с выключенной проверкой JWT; проверка секретного адреса остаётся в коде.");
+          const probe = await request(callback, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, 2000);
+          const probeBody: unknown = await probe.json().catch(() => null);
+          if (!probe.ok || optionalObject(probeBody).ok !== true) throw new ApiError(503, "webhook_unavailable", "Приёмник webhook недоступен. Опубликуйте avito-webhook с выключенной проверкой JWT; проверка секретного адреса остаётся в коде.");
           const subscriptions = await json(await avitoPost(account, "/messenger/v1/subscriptions"));
           if (!Array.isArray(subscriptions.subscriptions)) throw new ApiError(502, "invalid_response", "Авито не подтвердило список webhook-подписок.");
           const exists = subscriptions.subscriptions.some((value) => { const row = optionalObject(value); return row.url === callback && String(row.version) === "3"; });
@@ -330,12 +489,19 @@ export function createAvitoHandler(dependencies: Dependencies) {
         if (input.action === "chats") {
           const data = await avitoGet(account, `/messenger/v2/accounts/${accountId}/chats?limit=50&offset=${offset}&chat_types=u2i,u2u`);
           if (!Array.isArray(data.chats)) throw new ApiError(502, "invalid_response", "Авито вернуло некорректный список чатов.");
-          const chats = data.chats.map((value) => {
-            const row = object(value);
-            if (!text(row.id)) throw new ApiError(502, "invalid_response", "Авито вернуло чат без идентификатора.");
+          const chats = data.chats.flatMap((value) => {
+            const row = optionalObject(value);
+            const id = text(row.id);
+            // One malformed preview must not hide all other dialogs. Avito's
+            // last_message is optional and can vary for system/legacy chats.
+            if (!id) return [];
             const users = Array.isArray(row.users) ? row.users.map(optionalObject).filter((user) => String(user.id) !== accountId) : [];
             const context = optionalObject(optionalObject(row.context).value);
-            return { id: text(row.id), name: users.map((user) => text(user.name)).filter(Boolean).join(", ") || "Собеседник Авито", itemTitle: text(context.title), itemUrl: avitoUrl(context.url), lastMessage: row.last_message ? messengerMessage(row.last_message) : null };
+            let lastMessage: ReturnType<typeof messengerMessage> | null = null;
+            if (row.last_message) {
+              try { lastMessage = messengerMessage(row.last_message); } catch { /* Keep the chat; preview text is optional. */ }
+            }
+            return [{ id, name: users.map((user) => text(user.name)).filter(Boolean).join(", ") || "Собеседник Авито", itemTitle: text(context.title), itemUrl: avitoUrl(context.url), lastMessage }];
           });
           return respond(200, { chats, offset, hasMore: chats.length === 50 && Number(offset) < 1000 });
         }
@@ -359,8 +525,18 @@ export function createAvitoHandler(dependencies: Dependencies) {
         }
         if (input.action === "read_chat") {
           // chatRead has no request body in the Avito contract.
-          await avitoPost(account, `${path}/read`);
-          if (env("SUPABASE_SERVICE_ROLE_KEY") && readIds.length) {
+          try {
+            await avitoPost(account, `${path}/read`);
+          } catch (error) {
+            // Reading history and marking it read are separate Avito permissions.
+            // Keep that distinction in the response so a read-receipt denial does
+            // not look like a failure to load the conversation.
+            if (error instanceof ApiError && ["avito_subscription", "avito_access"].includes(error.code)) {
+              throw new ApiError(error.status, "avito_read_access", "Авито не разрешило отметить чат прочитанным. История сообщений при этом доступна; проверьте доступ к Messenger API.");
+            }
+            throw error;
+          }
+          if (messengerStorageConfigured(env) && Array.isArray(readIds) && readIds.length) {
             try {
               await messengerStorage(env, dependencies.fetch, "rpc/avito_mark_cached_read", { method: "POST", body: JSON.stringify({ p_owner: ownerId, p_key: account.key, p_account: accountId, p_chat: chatId, p_ids: readIds }) });
             } catch { /* Avito already confirmed the receipt; do not turn it into a false failure. */ }

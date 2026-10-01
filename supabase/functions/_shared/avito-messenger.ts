@@ -1,6 +1,19 @@
 type MessengerEnv = (name: string) => string | undefined;
 export type MessengerBinding = { ownerId: string; key: string; accountId: string; clientId: string };
 
+function serviceKey(env: MessengerEnv): string {
+  const legacy = env("SUPABASE_SERVICE_ROLE_KEY");
+  if (legacy) return legacy;
+  try {
+    const keys = JSON.parse(env("SUPABASE_SECRET_KEYS") || "{}");
+    return keys && typeof keys.default === "string" ? keys.default : "";
+  } catch { return ""; }
+}
+
+export function messengerStorageConfigured(env: MessengerEnv): boolean {
+  return Boolean(env("SUPABASE_URL") && serviceKey(env));
+}
+
 export function webhookSecret(env: MessengerEnv): string {
   const secret = env("AVITO_WEBHOOK_SECRET") || "";
   if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error("Webhook secret is not configured");
@@ -29,7 +42,7 @@ export async function verifyWebhook(secret: string, binding: MessengerBinding, s
 // Service credentials never leave the functions. Browser clients have read-only RLS access.
 export async function messengerStorage(env: MessengerEnv, fetcher: typeof fetch, path: string, init: RequestInit = {}, timeout = 8000): Promise<unknown> {
   const base = env("SUPABASE_URL")?.replace(/\/$/, "");
-  const key = env("SUPABASE_SERVICE_ROLE_KEY");
+  const key = serviceKey(env);
   if (!base || !key) throw new Error("Messenger storage is not configured");
   const url = new URL(base);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "kong"].includes(url.hostname))) throw new Error("Invalid storage URL");
@@ -38,7 +51,10 @@ export async function messengerStorage(env: MessengerEnv, fetcher: typeof fetch,
     redirect: "error", signal: AbortSignal.timeout(timeout),
   });
   if (!response.ok) throw new Error("Messenger storage request failed");
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const body = await response.text();
+  if (!body.trim()) return null;
+  return JSON.parse(body);
 }
 
 export function cacheMessengerMessages(env: MessengerEnv, fetcher: typeof fetch, binding: MessengerBinding, chatId: string, messages: unknown[], webhook = false) {

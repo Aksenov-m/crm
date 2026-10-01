@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/crm.test.ts tests/crm-repository.test.ts tests/avito-handler.test.ts tests/avito-repository.test.ts",
+    "test": "tsx --test tests/crm.test.ts tests/crm-repository.test.ts tests/avito-handler.test.ts tests/avito-repository.test.ts tests/avito-webhook.test.ts tests/avito-messenger-sql.test.ts",
     "test:e2e": "playwright test",
     "avito:bundle": "node scripts/build-avito-function.mjs"
   },
@@ -19,6 +19,7 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@playwright/test": "^1.58.0",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.0.0",

@@ -54,7 +54,7 @@ function useReadReceipt(repository: Repository, accountKey: string, chatId: stri
   const [attempt, setAttempt] = useState(0);
   const acknowledged = useRef(new Set<string>());
   const pending = useRef<Promise<void> | null>(null);
-  // Stable across polling. Only incoming messages need our read receipt.
+  // Stable across snapshots and Realtime updates. Only incoming messages need our receipt.
   const unreadKey = JSON.stringify(page?.offset === 0 ? page.messages.filter((message) => message.direction === "in" && !message.isRead).map((message) => message.id).sort() : []);
   useEffect(() => {
     const ids: string[] = JSON.parse(unreadKey);

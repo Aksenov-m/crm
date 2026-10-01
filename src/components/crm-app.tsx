@@ -116,6 +116,15 @@ export function CrmApp({ client, user, onLogout, demo = false, onResetDemo }: Cr
   }, [toast]);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("avito") !== "connected") return;
+    setPage("avito");
+    params.delete("avito");
+    const query = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+  }, []);
+
+  useEffect(() => {
     if (!notificationsOpen) return;
     const close = (event: PointerEvent) => {
       if (!notificationPanel.current?.contains(event.target as Node)) setNotificationsOpen(false);

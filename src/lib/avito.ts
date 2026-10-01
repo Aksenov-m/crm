@@ -8,6 +8,8 @@ export type AvitoChatsPage = { chats: AvitoChat[]; offset: number; hasMore: bool
 export type AvitoMessagesPage = { messages: AvitoMessage[]; offset: number; hasMore: boolean; warning?: string };
 export type AvitoMessageEvent = { chatId: string; message: AvitoMessage };
 export type AvitoWebhookStatus = { enabled: boolean; accountId: string; lastEventAt: string | null };
+export type AvitoOAuthStart = { authorizeUrl: string; redirectUri: string };
+export type AvitoOAuthResult = { connected: boolean; accountKey: string; returnOrigin: string };
 export type AvitoRealtimeState = "connecting" | "connected" | "disconnected";
 export type AvitoProfile = { id: string; name: string; profileUrl: string | null };
 export type AvitoItem = { id: string; title: string; description: string; price: number | null; category: string; status: string; url: string | null; imageUrl: string | null };
@@ -59,11 +61,14 @@ export function createAvitoRepository(client: SupabaseClient) {
   }
   return {
     async accounts() { return (await invoke<{ accounts: AvitoAccount[] }>({ action: "accounts" })).accounts; },
+    authorize(accountKey: string) { return invoke<AvitoOAuthStart>({ action: "oauth_start", accountKey }); },
+    completeOAuth(code: string, state: string, providerError = "") { return invoke<AvitoOAuthResult>({ action: "oauth_callback", code, state, ...(providerError ? { error: providerError } : {}) }); },
     webhookStatus(accountKey: string) { return invoke<AvitoWebhookStatus>({ action: "webhook_status", accountKey }); },
     enableWebhook(accountKey: string) { return invoke<AvitoWebhookStatus>({ action: "enable_webhook", accountKey }); },
     async chats(accountKey: string, offset = 0): Promise<AvitoChatsPage> {
       try { return await invoke<AvitoChatsPage>({ action: "chats", accountKey, offset }); }
       catch (cause) {
+        if (cause instanceof AvitoRequestError && ["avito_auth", "avito_subscription", "avito_access"].includes(cause.code)) throw cause;
         const { data, error } = await client.rpc("avito_cached_chats", { p_key: accountKey, p_offset: offset });
         if (error || !Array.isArray(data) || !data.length) throw cause;
         const chats = data.map((row) => ({ id: String(row.chat_id), name: "Собеседник Авито", itemTitle: "", itemUrl: null, lastMessage: cachedMessage(row.message) }));
@@ -98,7 +103,7 @@ export function createAvitoRepository(client: SupabaseClient) {
               if (!active) return;
               if (error) { onState("disconnected"); return; }
               for (const row of [...(data ?? [])].reverse()) deliver(row);
-            })();
+            })().catch(() => { if (active) onState("disconnected"); });
           }
         });
       return () => { active = false; void client.removeChannel(channel); };
