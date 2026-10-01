@@ -32,7 +32,26 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
     try {
       const result = await api.accounts();
       if (!mounted.current || job !== generation.current) return;
-      setAccounts(result); setAccountKey(result[0]?.key ?? "");
+      const params = new URLSearchParams(window.location.search);
+      const returnedAccountKey = params.get("avito_account") || "";
+      const selectedKey = result.some((account) => account.key === returnedAccountKey) ? returnedAccountKey : result[0]?.key ?? "";
+      setAccounts(result); setAccountKey(selectedKey);
+      if (returnedAccountKey) {
+        params.delete("avito_account");
+        const query = params.toString();
+        window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+      }
+      if (returnedAccountKey && selectedKey) {
+        try {
+          const connectedProfile = await api.profile(selectedKey);
+          if (!mounted.current || job !== generation.current) return;
+          setProfile(connectedProfile);
+          await load(1, connectedProfile, true, selectedKey);
+          if (mounted.current) setNotice("OAuth-доступ Авито подтверждён. Объявления загружены.");
+        } catch (cause) {
+          if (mounted.current && job === generation.current) setError(message(cause));
+        }
+      }
     } catch (cause) { if (mounted.current && job === generation.current) setError(message(cause)); }
     finally { if (mounted.current && job === generation.current) setLoading(false); }
   }
@@ -42,7 +61,7 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
     return () => { mounted.current = false; generation.current += 1; };
   }, [api, ownerId]);
 
-  async function importItem(accountId: string, item: AvitoItem, productId: string | null) {
+  async function importItem(accountId: string, item: AvitoItem, productId: string | null, accountKeyOverride = accountKey) {
     const linkedProductId = await api.connectItem(accountId, item, productId);
     let descriptionError: string | null = null;
     let imageError: string | null = null;
@@ -56,7 +75,7 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
     }
     if (item.imageUrl && needsImage) {
       try {
-        const image = await api.downloadImage(accountKey, item.imageUrl);
+        const image = await api.downloadImage(accountKeyOverride, item.imageUrl);
         await api.attachImage(ownerId, linkedProductId, image);
       } catch (cause) { imageError = message(cause); }
     }
@@ -73,20 +92,35 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
       if (mounted.current && job === generation.current) {
         setProfile(currentProfile);
         setLoading(false);
-        await load(1, currentProfile, true);
+        await load(1, currentProfile, true, accountKey);
       }
     } catch (cause) {
       if (mounted.current && job === generation.current) { setProfile(null); setError(message(cause)); }
     } finally { if (mounted.current && job === generation.current) setLoading(false); }
   }
 
-  async function load(targetPage = 1, profileOverride: AvitoProfile | null = profile, allowWhileLoading = false) {
+  async function startOAuth() {
+    if (!accountKey || saving || loading) return;
+    setLoading(true); setError(""); setNotice(""); setLinkError("");
+    try {
+      const result = await api.authorize(accountKey);
+      const url = new URL(result.authorizeUrl);
+      if (url.protocol !== "https:" || !["avito.ru", "www.avito.ru"].includes(url.hostname)) throw new Error("Авито вернул некорректную ссылку авторизации.");
+      window.location.assign(url.href);
+    } catch (cause) {
+      if (mounted.current) setError(message(cause));
+      setLoading(false);
+    }
+  }
+
+  async function load(targetPage = 1, profileOverride: AvitoProfile | null = profile, allowWhileLoading = false, accountKeyOverride = accountKey) {
     const activeProfile = profileOverride;
-    if (!accountKey || !activeProfile || saving || (loading && !allowWhileLoading)) return;
+    const activeAccountKey = accountKeyOverride;
+    if (!activeAccountKey || !activeProfile || saving || (loading && !allowWhileLoading)) return;
     const job = ++generation.current;
     setLoading(true); setError(""); setNotice(""); setLinkError("");
     try {
-      const [items, linked] = await Promise.allSettled([api.items(accountKey, targetPage), api.links(ownerId, activeProfile.id)]);
+      const [items, linked] = await Promise.allSettled([api.items(activeAccountKey, targetPage), api.links(ownerId, activeProfile.id)]);
       if (!mounted.current || job !== generation.current) return;
       if (items.status !== "fulfilled") { setPage(null); setError(message(items.reason)); return; }
       setPage(items.value);
@@ -96,7 +130,7 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
 
       const imports: PromiseSettledResult<{ productId: string; descriptionError: string | null; imageError: string | null; imageMissing: boolean }>[] = [];
       for (const item of items.value.items) {
-        try { imports.push({ status: "fulfilled", value: await importItem(activeProfile.id, item, null) }); }
+        try { imports.push({ status: "fulfilled", value: await importItem(activeProfile.id, item, null, activeAccountKey) }); }
         catch (reason) { imports.push({ status: "rejected", reason }); }
       }
       if (!mounted.current || job !== generation.current) return;
@@ -142,7 +176,7 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
   return <section aria-label="Подключение Авито" className="space-y-5">
     <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex items-start gap-4"><span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={23} /></span><div><h2 className="text-lg font-semibold text-slate-900">Ваш аккаунт Авито</h2><p className="mt-1 text-sm leading-relaxed text-slate-500">Подключите личный аккаунт по сохранённым ключам. После проверки здесь появятся имя и ID аккаунта.</p></div></div>
-      <div className="mt-6 flex flex-wrap items-end gap-3"><label className="field w-full min-w-0 sm:w-auto sm:flex-1">Аккаунт Авито<select aria-label="Аккаунт Авито" className="select mt-2" value={accountKey} disabled={loading || Boolean(saving) || !accounts.length} onChange={(event) => chooseAccount(event.target.value)}>{!accounts.length && <option value="">Нет настроенных аккаунтов</option>}{accounts.map((account) => <option key={account.key} value={account.key}>{account.name}</option>)}</select></label><button className="button button-primary" disabled={loading || Boolean(saving)} onClick={() => void (accounts.length ? verifyAccount() : loadAccounts())}>{loading ? <LoaderCircle size={16} className="animate-spin" /> : <RefreshCw size={16} />}{loading ? "Подключаемся…" : accounts.length ? profile ? "Проверить подключение" : "Подключить аккаунт" : "Повторить подключение"}</button></div>
+      <div className="mt-6 flex flex-wrap items-end gap-3"><label className="field w-full min-w-0 sm:w-auto sm:flex-1">Аккаунт Авито<select aria-label="Аккаунт Авито" className="select mt-2" value={accountKey} disabled={loading || Boolean(saving) || !accounts.length} onChange={(event) => chooseAccount(event.target.value)}>{!accounts.length && <option value="">Нет настроенных аккаунтов</option>}{accounts.map((account) => <option key={account.key} value={account.key}>{account.name}</option>)}</select></label><button className="button button-primary" disabled={loading || Boolean(saving)} onClick={() => void (accounts.length ? (profile ? verifyAccount() : startOAuth()) : loadAccounts())}>{loading ? <LoaderCircle size={16} className="animate-spin" /> : <RefreshCw size={16} />}{loading ? "Подключаемся…" : accounts.length ? profile ? "Проверить подключение" : "Подключить через Авито" : "Повторить подключение"}</button></div>
       {profile && <div className="mt-5 flex flex-wrap items-center gap-2 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800"><CheckCircle2 size={17} /><span>Подключён:</span><strong>{profile.name}</strong><span>· ID {profile.id}</span>{profile.profileUrl && <a className="ml-auto inline-flex items-center gap-1 underline" href={profile.profileUrl} target="_blank" rel="noopener noreferrer">Профиль<ExternalLink size={13} /></a>}</div>}
       {profile && <button className="button button-secondary mt-4" disabled={loading || Boolean(saving)} onClick={() => void load(1)}>Обновить объявления</button>}
       <p className="mt-4 text-xs leading-relaxed text-slate-400">Ключи хранятся на сервере. Доступ к подключению есть только у назначенного владельца CRM.</p>
