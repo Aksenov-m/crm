@@ -5,7 +5,7 @@
 
 Для актуального backend не нужно вручную записывать Client ID и Client Secret в таблицу или JSON-конфигурацию. Откройте раздел «Авито» на сайте и заполните форму «Ключи приложения Авито». CRM проверит ключи и сохранит их зашифрованными на сервере. При необходимости сначала настройте `AVITO_CREDENTIALS_ENCRYPTION_KEY` в `.env.backend` по инструкции [собственного backend](SELF_HOSTED_BACKEND.md#добавление-ключей-авито-через-crm). Секция `AVITO_ACCOUNTS_JSON` ниже описывает прежнюю ручную настройку и оставлена для совместимости.
 
-Команды развёртывания Edge Function ниже относятся к прежней Supabase-инфраструктуре и больше не нужны. Настройте OAuth, API и Docker по [инструкции собственного backend](SELF_HOSTED_BACKEND.md). Основной redirect URI: `https://api.proaksenov.ru/api/avito/callback`.
+Команды развёртывания Edge Function ниже относятся к прежней Supabase-инфраструктуре и больше не нужны. Настройте API и Docker по [инструкции собственного backend](SELF_HOSTED_BACKEND.md). Зарегистрированный Redirect URI: `https://proaksenov.ru/api/avito/callback`.
 
 # Архив: прежнее подключение Авито через Supabase
 
@@ -17,7 +17,7 @@
 
 Каталог [авторизации](https://developers.avito.ru/api-catalog/auth/documentation), [пользователя](https://developers.avito.ru/api-catalog/user/documentation) и [объявлений](https://developers.avito.ru/api-catalog/item/documentation) при разработке возвращал ограничение HTTP 429. Совместимость реализованных методов подтверждена прямыми запросами; доступ к другим методам и актуальные ограничения тарифов этим не проверялись.
 
-Для подключения используется OAuth Authorization Code. Единственный зарегистрированный Redirect URL — `https://proaksenov.ru/api/avito/callback,` (запятая в конце является частью URL). Он обрабатывается статической страницей CRM, а обмен кода на токены выполняется серверной Edge Function. При запуске CRM локально production callback после авторизации возвращает пользователя обратно на `http://127.0.0.1:3000`.
+В кабинете Авито зарегистрирован Redirect URL `https://proaksenov.ru/api/avito/callback` без завершающей запятой. Статическая страница CRM принимает callback и пересылает код серверному API на `api.proaksenov.ru`.
 
 Если запрос `/token` возвращает `unauthorized_client` при обмене authorization code, проверьте Client ID, Client Secret и точное совпадение Redirect URL в приложении Авито. Для старых сохранённых ключей повторно запускать `client_credentials` не нужно.
 

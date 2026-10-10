@@ -58,7 +58,7 @@ docker compose exec -it api node dist/backend/server/scripts/create-admin.js
 В настройках OAuth-приложения Авито укажите точный redirect URI:
 
 ```text
-https://api.proaksenov.ru/api/avito/callback
+https://proaksenov.ru/api/avito/callback
 ```
 
 CRM использует `AVITO_WEBHOOK_SECRET` для проверки уведомлений Авито, а `AVITO_FEED_SECRET` — для XML-фида и временных ссылок на фотографии. Сохраните оба значения отдельно. Серверные секреты не задаются через `NEXT_PUBLIC_*`.
