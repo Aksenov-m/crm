@@ -1,0 +1,63 @@
+name: Deploy to server
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proaksenov-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pushed revision
+        uses: actions/checkout@v4
+
+      - name: Create deployment archive
+        run: |
+          tar -czf "$RUNNER_TEMP/crm-deploy.tar.gz" \
+            --exclude='./.git' \
+            --exclude='./node_modules' \
+            --exclude='./.next' \
+            --exclude='./.next-e2e' \
+            --exclude='./out' \
+            --exclude='./dist' \
+            --exclude='./artifacts' \
+            --exclude='./test-results' \
+            --exclude='./playwright-report' \
+            --exclude='./.npm-cache' \
+            --exclude='./.playwright' \
+            --exclude='./.deploy-local' \
+            --exclude='*.tsbuildinfo' \
+            --exclude='*.log' \
+            --exclude='.env*' \
+            .
+
+      - name: Send source and deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DEPLOY_SSH_KEY" ]]; then
+            echo '::error::Add the DEPLOY_SSH_KEY repository secret before deploying.'
+            exit 1
+          fi
+
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/crm_deploy_key"
+          chmod 600 "$HOME/.ssh/crm_deploy_key"
+          cp .github/deploy_known_hosts "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          ssh -i "$HOME/.ssh/crm_deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            crmdeploy@157.228.134.245 \
+            < "$RUNNER_TEMP/crm-deploy.tar.gz"

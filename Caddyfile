@@ -1,0 +1,10 @@
+proaksenov.ru {
+	encode zstd gzip
+	root * /srv
+	file_server
+}
+
+api.proaksenov.ru {
+	encode zstd gzip
+	reverse_proxy api:3001
+}

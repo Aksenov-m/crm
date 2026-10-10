@@ -100,11 +100,32 @@ test("messenger sends text once, returns the confirmed message and reads via sep
   assert.equal(f.requests.filter(({ url }) => url.endsWith("/messages")).length, 1);
 });
 
+test("messenger deletes an outgoing message through Avito and caches the deleted marker", async () => {
+  const f = messengerFixture((url, init) => {
+    if (url.endsWith("/messages/msg-1")) {
+      assert.equal(init.method, "POST");
+      assert.equal(init.body, undefined);
+      assert.equal(new Headers(init.headers).has("Content-Type"), false);
+      return response({ ok: true });
+    }
+    if (url.endsWith("/rpc/avito_cache_messages")) {
+      const body = JSON.parse(String(init.body));
+      assert.deepEqual(body.p_messages, [{ id: "msg-1", text: "Сообщение удалено", type: "deleted", created: 1700000000, direction: "out", isRead: true }]);
+      return response(null);
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  const result = await f.call({ action: "delete_message", accountKey: "main", chatId: "chat-1", messageId: "msg-1", created: 1700000000 });
+  assert.equal(result.status, 200);
+  assert.deepEqual((await result.json()).message, { id: "msg-1", text: "Сообщение удалено", type: "deleted", created: 1700000000, direction: "out", isRead: true });
+});
+
 test("messenger validates payloads before calling Avito and denies other owners", async () => {
   const f = messengerFixture(() => { throw new Error("No API calls expected"); });
   for (const body of [
     { action: "send_message", chatId: "chat-1", text: " " },
     { action: "send_message", chatId: "chat-1", text: "x".repeat(1001) },
+    { action: "delete_message", chatId: "chat-1", messageId: "\u0000" },
     { action: "chat_messages", chatId: "\u0000" },
     { action: "chats", offset: 1001 },
     { action: "chats", offset: -1 },
@@ -444,7 +465,7 @@ test("OAuth start stores only a hash of state and builds the registered Avito re
   const url = new URL(body.authorizeUrl);
   assert.equal(url.origin, "https://avito.ru");
   assert.equal(url.pathname, "/oauth");
-  assert.equal(url.searchParams.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback,");
   assert.equal(url.searchParams.get("response_type"), "code");
   assert.equal(url.searchParams.get("scope"), "items:info messenger:read messenger:write user:read");
   const state = url.searchParams.get("state")!;
@@ -473,16 +494,16 @@ test("OAuth start keeps the single registered redirect for the local dev origin"
   assert.equal(result.status, 200);
   const body = await result.json();
   const url = new URL(body.authorizeUrl);
-  assert.equal(url.searchParams.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback");
-  assert.equal(body.redirectUri, "https://proaksenov.ru/api/avito/callback");
-  assert.equal((stateBody as Record<string, unknown>).redirect_uri, "https://proaksenov.ru/api/avito/callback");
+  assert.equal(url.searchParams.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback,");
+  assert.equal(body.redirectUri, "https://proaksenov.ru/api/avito/callback,");
+  assert.equal((stateBody as Record<string, unknown>).redirect_uri, "https://proaksenov.ru/api/avito/callback,");
 });
 
 test("OAuth callback exchanges the code server-side and stores refreshable tokens", async () => {
   let tokenRequest: URLSearchParams | undefined;
   let stored: Record<string, unknown> | undefined;
   const f = fixture({ env: { SUPABASE_SERVICE_ROLE_KEY: "service-secret" }, api: (url, init) => {
-    if (url.endsWith("/rest/v1/rpc/avito_consume_oauth_state")) return response([{ account_key: "main", redirect_uri: "https://proaksenov.ru/api/avito/callback" }]);
+    if (url.endsWith("/rest/v1/rpc/avito_consume_oauth_state")) return response([{ account_key: "main", redirect_uri: "https://proaksenov.ru/api/avito/callback," }]);
     if (url.endsWith("/token")) {
       tokenRequest = new URLSearchParams(String(init.body));
       return response({ access_token: "oauth-access-token", refresh_token: "oauth-refresh-token", token_type: "Bearer", expires_in: 3600, scope: "items:info messenger:read messenger:write user:read" });
@@ -501,7 +522,7 @@ test("OAuth callback exchanges the code server-side and stores refreshable token
   const savedToken = stored as Record<string, unknown>;
   assert.equal(form.get("grant_type"), "authorization_code");
   assert.equal(form.get("code"), "one-time-code");
-  assert.equal(form.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback");
+  assert.equal(form.get("redirect_uri"), "https://proaksenov.ru/api/avito/callback,");
   assert.equal(savedToken.refresh_token, "oauth-refresh-token");
   assert.ok(!JSON.stringify(resultBody).includes("oauth-access-token"));
 });
@@ -511,7 +532,7 @@ test("OAuth callback returns the local origin while exchanging through the singl
   const f = fixture({
     env: { SUPABASE_SERVICE_ROLE_KEY: "service-secret", AVITO_ALLOWED_ORIGINS: `${ORIGIN},${LOCAL_ORIGIN}` },
     api: (url, init) => {
-      if (url.endsWith("/rest/v1/rpc/avito_consume_oauth_state")) return response([{ account_key: "main", redirect_uri: "https://proaksenov.ru/api/avito/callback" }]);
+      if (url.endsWith("/rest/v1/rpc/avito_consume_oauth_state")) return response([{ account_key: "main", redirect_uri: "https://proaksenov.ru/api/avito/callback," }]);
       if (url.endsWith("/token")) {
         tokenRequest = new URLSearchParams(String(init.body));
         return response({ access_token: "oauth-access-token", refresh_token: "oauth-refresh-token", token_type: "Bearer", expires_in: 3600 });
@@ -523,5 +544,5 @@ test("OAuth callback returns the local origin while exchanging through the singl
   const result = await f.call({ action: "oauth_callback", state: encodedOAuthState(LOCAL_ORIGIN), code: "local-code" }, { origin: LOCAL_ORIGIN });
   assert.equal(result.status, 200);
   assert.deepEqual(await result.json(), { connected: true, accountKey: "main", returnOrigin: LOCAL_ORIGIN });
-  assert.equal((tokenRequest as URLSearchParams).get("redirect_uri"), "https://proaksenov.ru/api/avito/callback");
+  assert.equal((tokenRequest as URLSearchParams).get("redirect_uri"), "https://proaksenov.ru/api/avito/callback,");
 });

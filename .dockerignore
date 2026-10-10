@@ -1,0 +1,16 @@
+.git
+.next
+.next-e2e
+node_modules
+dist
+out
+artifacts
+test-results
+playwright-report
+.deploy-local
+.npm-cache
+.playwright
+*.tsbuildinfo
+*.log
+.env*
+!.env.example

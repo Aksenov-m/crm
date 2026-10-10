@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init/001-create-app-role.sh:/docker-entrypoint-initdb.d/001-create-app-role.sh:ro
+      - ./docs/016_create_backend_database_role.sql:/opt/create_backend_database_role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - private
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.backend
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      FILE_STORAGE_DIR: /app/data/uploads
+    volumes:
+      - product_uploads:/app/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - private
+
+  proxy:
+    image: prolot-site:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.site
+      args:
+        NEXT_PUBLIC_BACKEND_URL: https://api.proaksenov.ru
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - private
+
+volumes:
+  postgres_data:
+  product_uploads:
+  caddy_data:
+  caddy_config:
+
+networks:
+  private:
+    driver: bridge

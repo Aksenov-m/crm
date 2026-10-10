@@ -47,3 +47,15 @@ test("demo is linked from login and fits a mobile screen", async ({ page }) => {
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
 });
+
+test("cancelling the photo picker keeps the new product dialog open", async ({ page }) => {
+  await page.goto("/demo");
+  await expect(page.getByRole("region", { name: "Деморежим", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Добавить товар", exact: true }).first().click();
+  const dialog = page.getByRole("dialog");
+  await dialog.locator('input[type="file"]').evaluate((input) => {
+    input.dispatchEvent(new Event("cancel", { bubbles: true, cancelable: true }));
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "Новое объявление", exact: true })).toBeVisible();
+});

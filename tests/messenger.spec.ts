@@ -57,8 +57,13 @@ async function setup(page: Page) {
     }
     if (body.action === "send_message") {
       if (failSend) return reply({ error: "send_uncertain", message: "Не удалось подтвердить отправку" }, 502);
-      const message = { id: "sent-1", text: body.text, type: "text", created: 1700000001, direction: "out", isRead: true };
+      const message = { id: "sent-1", text: body.text, type: "text", created: Math.floor(Date.now() / 1000), direction: "out", isRead: true };
       messages.push(message); return reply({ message });
+    }
+    if (body.action === "delete_message") {
+      const index = messages.findIndex((message) => message.id === body.messageId);
+      if (index >= 0) messages[index] = { ...messages[index], text: "Сообщение удалено", type: "deleted" };
+      return reply({ deleted: true, messageId: body.messageId, message: messages[index] });
     }
     throw new Error(`Unexpected action: ${body.action}`);
   });
@@ -185,6 +190,19 @@ test("webhook messages survive API history errors and a page reload; deleting a 
   mock.deliver({ ...incoming, type: "deleted", text: "Сообщение удалено" });
   await expect(page.getByRole("log")).not.toContainText("Получено через webhook");
   await expect(page.getByRole("log")).toContainText("Сообщение удалено");
+});
+
+test("messenger deletes a recent outgoing message and keeps the Avito marker", async ({ page }) => {
+  const mock = await setup(page);
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: /Алексей/ }).click();
+  await page.getByLabel("Ответ в Авито", { exact: true }).fill("Удаляемый ответ");
+  await page.getByRole("button", { name: "Отправить в Авито", exact: true }).click();
+  await expect(page.getByRole("log")).toContainText("Удаляемый ответ");
+  await page.getByRole("button", { name: "Удалить сообщение", exact: true }).click();
+  await expect(page.getByRole("log")).not.toContainText("Удаляемый ответ");
+  await expect(page.getByRole("log")).toContainText("Сообщение удалено");
+  expect(mock.calls.filter((call) => call.action === "delete_message")).toHaveLength(1);
 });
 
 test("realtime reconnect catches missed messages without periodic API polling", async ({ page }) => {

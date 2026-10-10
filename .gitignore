@@ -1,4 +1,5 @@
 node_modules/
+dist/
 .next/
 .next-e2e/
 out/
@@ -7,7 +8,10 @@ out/
 test-results/
 playwright-report/
 artifacts/
+.deploy-local/
 *.tsbuildinfo
 *.log
 .env*
 !.env.example
+!.env.backend.example
+!.env.db.example

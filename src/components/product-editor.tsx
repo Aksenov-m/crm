@@ -63,6 +63,14 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
     };
   }, []);
 
+  useEffect(() => {
+    const input = fileRef.current;
+    if (!input) return;
+    const stopFilePickerCancel = (event: Event) => event.stopPropagation();
+    input.addEventListener("cancel", stopFilePickerCancel);
+    return () => input.removeEventListener("cancel", stopFilePickerCancel);
+  }, []);
+
   function readImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -211,7 +219,11 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
       className="modal-panel product-editor"
       aria-labelledby={`${formId}-heading`}
       aria-describedby={`${formId}-intro`}
-      onCancel={(event) => { event.preventDefault(); close(); }}
+      onCancel={(event) => {
+        if (event.target !== event.currentTarget) return;
+        event.preventDefault();
+        close();
+      }}
       onClick={(event) => { if (event.target === event.currentTarget) close(); }}
     >
       <div className="modal-header">
