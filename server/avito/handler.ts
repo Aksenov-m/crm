@@ -271,8 +271,9 @@ export function createAvitoHandler(dependencies: Dependencies) {
     const url = new URL("https://avito.ru/oauth");
     url.searchParams.set("client_id", account.clientId);
     url.searchParams.set("response_type", "code");
+    url.searchParams.set("pro_users_flow", "true");
     url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("scope", OAUTH_SCOPES.join(" "));
+    url.searchParams.set("scope", OAUTH_SCOPES.join(","));
     url.searchParams.set("state", state);
     return { authorizeUrl: url.href, redirectUri };
   }
