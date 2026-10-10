@@ -73,7 +73,7 @@ export function createAvitoRepository(){
     async readChat(accountKey:string,chatId:string,messageIds:string[]=[]){const r=await invoke<{read?:boolean}>({action:"read_chat",accountKey,chatId,...(messageIds.length?{messageIds:messageIds.slice(-100)}:{})});if(r?.read!==true)throw new AvitoRequestError("Сервер не подтвердил отметку прочтения.",null,"invalid_read_receipt")},
     async profile(accountKey:string){return(await invoke<{profile:AvitoProfile}>({action:"profile",accountKey})).profile},
     items(accountKey:string,page:number){return invoke<AvitoItemsPage>({action:"items",accountKey,page})},
-    async productMetrics(){return(await backendRequest<{metrics:Record<string,AvitoProductMetric}>("/api/avito/product-metrics")).metrics},
+    async productMetrics(){return(await backendRequest<{metrics:Record<string,AvitoProductMetric>}>("/api/avito/product-metrics")).metrics},
     publishItem(input:AvitoPublicationInput){return invoke<AvitoPublicationResult>({action:"publish_item",...input})},
     async downloadImage(accountKey:string,imageUrl:string):Promise<Blob>{
       let response:Response;try{response=await fetch(backendUrl("/api/avito"),{method:"POST",credentials:"include",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"image",accountKey,imageUrl})})}catch{throw new Error("Не удалось загрузить фотографию объявления Авито. Повторите позже.")}
