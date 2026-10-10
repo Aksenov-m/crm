@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { createAvitoHandler } from "./avito/handler.js";
 import { AppEnv, requireUser, resolveUserFromCookie } from "./auth.js";
+import { avitoApiAccountsForOwner, createAvitoApiAccount } from "./avito-credentials.js";
 import { avitoCachedChats, avitoCachedMessages, avitoStorage, cacheAvitoMessages, connectAvitoItem } from "./avito-storage.js";
 import { pool } from "./db.js";
 
@@ -8,6 +9,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const AVITO_ID = /^[1-9][0-9]{0,18}$/;
 const ACCOUNT_KEY = /^[a-zA-Z0-9_-]{1,40}$/;
 type Input = Record<string, unknown>;
+const credentialAttempts = new Map<string, { count: number; resetAt: number }>();
 
 const environment = (name: string) => process.env[name];
 const handler = createAvitoHandler({
@@ -15,10 +17,65 @@ const handler = createAvitoHandler({
   fetch: globalThis.fetch.bind(globalThis),
   storage: avitoStorage,
   cacheMessages: cacheAvitoMessages,
+  accountsForOwner: avitoApiAccountsForOwner,
   authenticate: async (request) => (await resolveUserFromCookie(request.headers.get("cookie") || ""))?.id || "",
 });
 
 export const avitoRoutes = new Hono<AppEnv>();
+avitoRoutes.post("/accounts", requireUser, async (context) => {
+  const ownerId = context.get("user").id;
+  const attempt = credentialAttempts.get(ownerId);
+  const now = Date.now();
+  if (attempt && attempt.resetAt > now && attempt.count >= 5) return context.json({ error: "rate_limited", message: "Слишком много попыток. Попробуйте добавить ключи позже." }, 429);
+
+  let body: Input;
+  try { body = await context.req.json(); } catch { return context.json({ error: "invalid_request", message: "Проверьте заполнение полей и повторите попытку." }, 400); }
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
+  if (!name || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)
+    || !clientId || clientId.length > 500 || /[\u0000-\u001f\u007f]/.test(clientId)
+    || !clientSecret || clientSecret.length > 500 || /[\u0000-\u001f\u007f]/.test(clientSecret)) {
+    return context.json({ error: "invalid_request", message: "Укажите название, Client ID и Client Secret Авито." }, 400);
+  }
+  if (!/^[a-f0-9]{64}$/i.test(process.env.AVITO_CREDENTIALS_ENCRYPTION_KEY || "")) {
+    return context.json({ error: "server_configuration", message: "Сервер ещё не настроен для безопасного хранения ключей Авито." }, 503);
+  }
+  try {
+    if (attempt && attempt.resetAt > now) attempt.count += 1;
+    else credentialAttempts.set(ownerId, { count: 1, resetAt: now + 60 * 60_000 });
+    const { rows: countRows } = await pool.query<{ count: string }>("select count(*)::text as count from avito_api_accounts where owner_id=$1", [ownerId]);
+    if (Number(countRows[0]?.count || 0) >= 10) return context.json({ error: "account_limit", message: "Можно подключить не больше 10 аккаунтов Авито." }, 409);
+
+    const tokenResponse = await fetch("https://api.avito.ru/token", {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(12_000),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
+    });
+    if (!tokenResponse.ok) return context.json({ error: "invalid_avito_credentials", message: "Авито не приняло ключи. Проверьте Client ID, Client Secret и настройки приложения в кабинете Авито." }, 400);
+    const tokenBody = await tokenResponse.json().catch(() => null) as { access_token?: unknown } | null;
+    const accessToken = typeof tokenBody?.access_token === "string" ? tokenBody.access_token : "";
+    if (!accessToken || accessToken.length > 8192) return context.json({ error: "invalid_avito_response", message: "Авито вернуло неожиданный ответ. Повторите попытку позже." }, 502);
+    const profileResponse = await fetch("https://api.avito.ru/core/v1/accounts/self", {
+      redirect: "error",
+      signal: AbortSignal.timeout(12_000),
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!profileResponse.ok) return context.json({ error: "avito_access_denied", message: "Ключи приняты, но приложение не получило доступ к аккаунту Авито. Проверьте права приложения." }, 400);
+    const profile = await profileResponse.json().catch(() => null) as { id?: unknown } | null;
+    const avitoId = typeof profile?.id === "number" ? String(profile.id) : profile?.id;
+    if (typeof avitoId !== "string" || !AVITO_ID.test(avitoId)) return context.json({ error: "invalid_avito_response", message: "Авито не вернуло ID аккаунта. Проверьте права приложения и повторите попытку." }, 502);
+
+    const account = await createAvitoApiAccount(ownerId, name, clientId, clientSecret);
+    credentialAttempts.delete(ownerId);
+    return context.json({ account: { key: account.key, name: account.name } }, 201, { "Cache-Control": "no-store" });
+  } catch {
+    return context.json({ error: "avito_account_save_failed", message: "Не удалось сохранить ключи Авито. Повторите попытку позже." }, 503);
+  }
+});
+
 avitoRoutes.post("/", requireUser, async (context) => handler(context.req.raw));
 
 avitoRoutes.get("/callback", async (context) => {

@@ -38,6 +38,10 @@ export function createAvitoRepository(){
   }
   return{
     async accounts(){return(await invoke<{accounts:AvitoAccount[]}>({action:"accounts"})).accounts},
+    async addAccount(input:{name:string;clientId:string;clientSecret:string}):Promise<AvitoAccount>{
+      try{return(await backendRequest<{account:AvitoAccount}>("/api/avito/accounts",{method:"POST",body:JSON.stringify(input)})).account}
+      catch(error){if(error instanceof BackendRequestError)throw new AvitoRequestError(error.message,error.status||null,error.code);throw new AvitoRequestError("Не удалось сохранить ключи Авито. Повторите попытку.",null,"account_save_failed")}
+    },
     authorize(accountKey:string){return invoke<AvitoOAuthStart>({action:"oauth_start",accountKey})},
     completeOAuth(code:string,state:string,providerError=""){return invoke<AvitoOAuthResult>({action:"oauth_callback",code,state,...(providerError?{error:providerError}:{})})},
     webhookStatus(accountKey:string){return invoke<AvitoWebhookStatus>({action:"webhook_status",accountKey})},

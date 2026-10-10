@@ -1,7 +1,8 @@
 import { signWebhook, webhookSecret, type MessengerBinding } from "./messenger.ts";
+import type { AvitoApiAccount } from "../avito-credentials.js";
 
 type Environment = (name: string) => string | undefined;
-type Account = { key: string; name: string; ownerId: string; clientId: string; clientSecret: string };
+type Account = AvitoApiAccount;
 type Json = Record<string, unknown>;
 type Dependencies = {
   env: Environment;
@@ -10,6 +11,7 @@ type Dependencies = {
   storage?: (path: string, init?: RequestInit, timeout?: number) => Promise<unknown>;
   cacheMessages?: (binding: MessengerBinding, chatId: string, messages: unknown[], webhook?: boolean) => Promise<unknown>;
   authenticate?: (request: Request) => Promise<string>;
+  accountsForOwner?: (ownerId: string) => Promise<Account[]>;
 };
 type StoredOAuthToken = { accessToken: string; refreshToken: string; expiresAt: number; tokenType: string };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -134,18 +136,20 @@ function accountsFromEnv(env: Environment): Account[] {
   const json = env("AVITO_ACCOUNTS_JSON");
   let accounts: unknown;
   try {
-    accounts = json ? JSON.parse(json) : [{ key: "main", name: "Мой аккаунт Авито", ownerId: env("AVITO_CRM_OWNER_ID"), clientId: env("AVITO_CLIENT_ID"), clientSecret: env("AVITO_CLIENT_SECRET") }];
-  } catch { throw new ApiError(503, "not_configured", "Проверьте настройки подключения Авито на сервере."); }
-  if (!Array.isArray(accounts) || !accounts.length || accounts.length > 20) throw new ApiError(503, "not_configured", "Подключение Авито ещё не настроено.");
+    accounts = json ? JSON.parse(json) : env("AVITO_CRM_OWNER_ID") && env("AVITO_CLIENT_ID") && env("AVITO_CLIENT_SECRET")
+      ? [{ key: "main", name: "Мой аккаунт Авито", ownerId: env("AVITO_CRM_OWNER_ID"), clientId: env("AVITO_CLIENT_ID"), clientSecret: env("AVITO_CLIENT_SECRET") }]
+      : [];
+  } catch { return []; }
+  if (!Array.isArray(accounts) || accounts.length > 20) return [];
   const keys = new Set<string>();
+  const valid: Account[] = [];
   for (const entry of accounts) {
-    const value = object(entry);
-    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(text(value.key)) || !UUID.test(text(value.ownerId)) || !text(value.clientId).trim() || !text(value.clientSecret).trim() || !text(value.name).trim() || keys.has(text(value.key))) {
-      throw new ApiError(503, "not_configured", "Подключение Авито ещё не настроено. Проверьте ключи и владельца CRM в настройках функции.");
-    }
+    const value = optionalObject(entry);
+    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(text(value.key)) || !UUID.test(text(value.ownerId)) || !text(value.clientId).trim() || !text(value.clientSecret).trim() || !text(value.name).trim() || keys.has(text(value.key))) continue;
     keys.add(text(value.key));
+    valid.push(value as Account);
   }
-  return accounts as Account[];
+  return valid;
 }
 
 function productIdentifier(value: unknown): string {
@@ -491,13 +495,14 @@ export function createAvitoHandler(dependencies: Dependencies) {
       const config = serviceConfiguration();
       if (!dependencies.authenticate) throw new ApiError(503, "server_configuration", "Не настроена проверка сессии CRM.");
       const ownerId = await dependencies.authenticate(req);
-      const accounts = accountsFromEnv(env).filter((account) => account.ownerId === ownerId);
-      if (!accounts.length) throw new ApiError(403, "account_not_allowed", "Для этого пользователя CRM не настроен аккаунт Авито.");
       const bodyText = await req.text();
       if (bodyText.length > 65536) throw new ApiError(413, "invalid_request", "Запрос слишком большой.");
       let input: Json;
       try { input = object(JSON.parse(bodyText)); } catch { throw new ApiError(400, "invalid_request", "Некорректный запрос."); }
+      const databaseAccounts = await dependencies.accountsForOwner?.(ownerId) || [];
+      const accounts = [...databaseAccounts.filter((account) => account.ownerId === ownerId), ...accountsFromEnv(env).filter((account) => account.ownerId === ownerId)];
       if (input.action === "accounts") return respond(200, { accounts: accounts.map(({ key, name }) => ({ key, name })) });
+      if (!accounts.length) throw new ApiError(403, "account_not_allowed", "Сначала добавьте Client ID и Client Secret Авито в этом разделе.");
       if (input.action === "oauth_callback") {
         const callbackState = await consumeOAuthState(ownerId, text(input.state));
         if (text(input.error)) throw new ApiError(400, "oauth_denied", "Подключение Авито отменено. Разрешите доступ и повторите подключение.");

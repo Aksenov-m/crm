@@ -2,18 +2,22 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pool } from "../db.js";
 
-const migration = "015_create_self_hosted_backend_schema.sql";
+const migrations = ["015_create_self_hosted_backend_schema.sql", "017_create_avito_api_accounts.sql"];
 
 export async function migrate(): Promise<void> {
   const ledger = await pool.query("select to_regclass('public.crm_schema_migrations') as name");
-  if (ledger.rows[0]?.name) {
-    const applied = await pool.query("select 1 from crm_schema_migrations where name = $1", [migration]);
-    if (applied.rowCount) return;
+  let hasLedger = Boolean(ledger.rows[0]?.name);
+  for (const migration of migrations) {
+    if (hasLedger) {
+      const applied = await pool.query("select 1 from crm_schema_migrations where name = $1", [migration]);
+      if (applied.rowCount) continue;
+    }
+    const sql = await readFile(resolve(process.cwd(), "docs", migration), "utf8");
+    await pool.query(sql);
+    await pool.query("insert into crm_schema_migrations(name) values ($1) on conflict do nothing", [migration]);
+    hasLedger = true;
+    console.info(`Applied ${migration}`);
   }
-  const sql = await readFile(resolve(process.cwd(), "docs", migration), "utf8");
-  await pool.query(sql);
-  await pool.query("insert into crm_schema_migrations(name) values ($1) on conflict do nothing", [migration]);
-  console.info(`Applied ${migration}`);
 }
 
 if (process.argv[1]?.replaceAll("\\", "/").endsWith("/server/scripts/migrate.ts")) {

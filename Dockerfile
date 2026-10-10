@@ -5,6 +5,7 @@ RUN npm ci
 COPY tsconfig.backend.json ./
 COPY server ./server
 COPY docs/015_create_self_hosted_backend_schema.sql ./docs/015_create_self_hosted_backend_schema.sql
+COPY docs/017_create_avito_api_accounts.sql ./docs/017_create_avito_api_accounts.sql
 RUN npm run backend:build
 
 FROM node:22-alpine AS production-dependencies
@@ -19,6 +20,7 @@ COPY --from=production-dependencies --chown=node:node /app/node_modules ./node_m
 COPY --chown=node:node package.json ./package.json
 COPY --from=build --chown=node:node /app/dist/backend ./dist/backend
 COPY --chown=node:node docs/015_create_self_hosted_backend_schema.sql ./docs/015_create_self_hosted_backend_schema.sql
+COPY --chown=node:node docs/017_create_avito_api_accounts.sql ./docs/017_create_avito_api_accounts.sql
 RUN mkdir -p /app/data/uploads && chown -R node:node /app/data
 USER node
 EXPOSE 3001

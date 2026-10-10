@@ -1,6 +1,10 @@
 
 # Новая установка: сервер CRM вместо Supabase
 
+## Добавление своих ключей в self-hosted CRM
+
+Для актуального backend не нужно вручную записывать Client ID и Client Secret в таблицу или JSON-конфигурацию. Откройте раздел «Авито» на сайте и заполните форму «Ключи приложения Авито». CRM проверит ключи и сохранит их зашифрованными на сервере. При необходимости сначала настройте `AVITO_CREDENTIALS_ENCRYPTION_KEY` в `.env.backend` по инструкции [собственного backend](SELF_HOSTED_BACKEND.md#добавление-ключей-авито-через-crm). Секция `AVITO_ACCOUNTS_JSON` ниже описывает прежнюю ручную настройку и оставлена для совместимости.
+
 Команды развёртывания Edge Function ниже относятся к прежней Supabase-инфраструктуре и больше не нужны. Настройте OAuth, API и Docker по [инструкции собственного backend](SELF_HOSTED_BACKEND.md). Основной redirect URI: `https://api.proaksenov.ru/api/avito/callback`.
 
 # Архив: прежнее подключение Авито через Supabase

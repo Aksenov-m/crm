@@ -4,6 +4,7 @@ type WebhookDependencies = {
   env: (name: string) => string | undefined;
   fetch: typeof fetch;
   cacheMessages?: (binding: MessengerBinding, chatId: string, messages: unknown[], webhook?: boolean) => Promise<unknown>;
+  accountByKey?: (key: string) => Promise<{ ownerId: string; clientId: string } | null>;
 };
 class WebhookError extends Error {
   constructor(public status: number) { super("Webhook request rejected"); }
@@ -47,7 +48,7 @@ async function webhookBody(req: Request) {
   } finally { clearTimeout(timer); void reader.cancel().catch(() => {}); }
 }
 
-export function createAvitoWebhookHandler({ env, cacheMessages = async () => { throw new Error("CRM message cache is not configured"); } }: WebhookDependencies) {
+export function createAvitoWebhookHandler({ env, cacheMessages = async () => { throw new Error("CRM message cache is not configured"); }, accountByKey }: WebhookDependencies) {
   return async (req: Request): Promise<Response> => {
     const respond = (status: number, body: unknown) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
     if (req.method !== "POST") return respond(405, { error: "method_not_allowed" });
@@ -58,9 +59,13 @@ export function createAvitoWebhookHandler({ env, cacheMessages = async () => { t
       if (!parts || parts.length !== 3 || !/^[a-zA-Z0-9_-]{1,40}$/.test(parts[0])) throw new WebhookError(403);
       const [key, accountId, signature] = parts;
       webhookId(accountId);
-      const accounts: unknown = env("AVITO_ACCOUNTS_JSON") ? JSON.parse(env("AVITO_ACCOUNTS_JSON")!) : [{ key: "main", ownerId: env("AVITO_CRM_OWNER_ID"), clientId: env("AVITO_CLIENT_ID") }];
-      if (!Array.isArray(accounts)) throw new Error("Invalid account configuration");
-      const account = accounts.find((value) => value?.key === key);
+      let accounts: unknown = [];
+      try {
+        accounts = env("AVITO_ACCOUNTS_JSON") ? JSON.parse(env("AVITO_ACCOUNTS_JSON")!) : [{ key: "main", ownerId: env("AVITO_CRM_OWNER_ID"), clientId: env("AVITO_CLIENT_ID") }];
+      } catch { /* Database managed accounts remain available if a legacy env value is invalid. */ }
+      const configured = Array.isArray(accounts) ? accounts.find((value) => value?.key === key) : undefined;
+      const stored = await accountByKey?.(key);
+      const account = stored || configured;
       if (!account || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(account.ownerId) || typeof account.clientId !== "string") throw new WebhookError(403);
       const binding: MessengerBinding = { ownerId: account.ownerId, key, accountId, clientId: account.clientId };
       if (!await verifyWebhook(webhookSecret(env), binding, signature)) throw new WebhookError(403);

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ExternalLink, Link2, LoaderCircle, Plug, RefreshCw, Send } from "lucide-react";
+import type { FormEvent } from "react";
+import { CheckCircle2, ExternalLink, KeyRound, Link2, LoaderCircle, Plug, Plus, RefreshCw, Send } from "lucide-react";
 import { createAvitoRepository, type AvitoAccount, type AvitoProfile, type AvitoItemsPage, type AvitoLink, type AvitoItem } from "@/lib/avito";
 import { formatMoney, type Product } from "@/lib/crm";
 
@@ -17,6 +18,10 @@ export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyCh
   const [selection, setSelection] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
+  const [credentialName, setCredentialName] = useState("Мой аккаунт Авито");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [showCredentialForm, setShowCredentialForm] = useState(true);
   const [error, setError] = useState("");
   const [linkError, setLinkError] = useState("");
   const [notice, setNotice] = useState("");
@@ -67,6 +72,20 @@ export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyCh
     void loadAccounts();
     return () => { mounted.current = false; generation.current += 1; };
   }, [api, ownerId]);
+
+  async function addCredentials(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (saving || loading) return;
+    setSaving("credentials"); setError(""); setNotice("");
+    try {
+      const account = await api.addAccount({ name: credentialName, clientId, clientSecret });
+      setAccounts((current) => [...current, account]);
+      setAccountKey(account.key); setProfile(null); setPage(null); setLinks([]); setSelection({});
+      setClientId(""); setClientSecret(""); setCredentialName("Мой аккаунт Авито"); setShowCredentialForm(false);
+      setNotice("Ключи проверены и сохранены. Теперь нажмите «Подключить через Авито».");
+    } catch (cause) { if (mounted.current) setError(message(cause)); }
+    finally { if (mounted.current) setSaving(null); }
+  }
 
   async function importItem(accountId: string, item: AvitoItem, productId: string | null, accountKeyOverride = accountKey) {
     const linkedProductId = await api.connectItem(accountId, item, productId);
@@ -198,6 +217,19 @@ export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyCh
       {profile && <div className="mt-5 flex flex-wrap items-center gap-2 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800"><CheckCircle2 size={17} /><span>Подключён:</span><strong>{profile.name}</strong><span>· ID {profile.id}</span>{profile.profileUrl && <a className="ml-auto inline-flex items-center gap-1 underline" href={profile.profileUrl} target="_blank" rel="noopener noreferrer">Профиль<ExternalLink size={13} /></a>}</div>}
       {profile && <button className="button button-secondary mt-4" disabled={loading || Boolean(saving)} onClick={() => void load(1)}>Обновить объявления</button>}
       <p className="mt-4 text-xs leading-relaxed text-slate-400">Ключи хранятся на сервере. Доступ к подключению есть только у назначенного владельца CRM.</p>
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><KeyRound size={16} />Ключи приложения Авито</h3><p className="mt-1 text-xs leading-relaxed text-slate-500">В кабинете Авито откройте раздел «Авито API» и скопируйте Client ID и Client Secret созданного приложения.</p></div>
+          {accounts.length > 0 && <button type="button" className="button button-secondary" disabled={loading || Boolean(saving)} onClick={() => setShowCredentialForm((open) => !open)}>{showCredentialForm ? "Скрыть форму" : <><Plus size={15} />Добавить аккаунт</>}</button>}
+        </div>
+        {showCredentialForm && <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={(event) => void addCredentials(event)}>
+          <label className="field sm:col-span-2">Название аккаунта<input className="input mt-2" value={credentialName} maxLength={80} required disabled={loading || Boolean(saving)} onChange={(event) => setCredentialName(event.target.value)} placeholder="Например, Основной аккаунт" /></label>
+          <label className="field">Client ID<input className="input mt-2" value={clientId} maxLength={500} required disabled={loading || Boolean(saving)} onChange={(event) => setClientId(event.target.value)} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
+          <label className="field">Client Secret<input className="input mt-2" type="password" value={clientSecret} maxLength={500} required disabled={loading || Boolean(saving)} onChange={(event) => setClientSecret(event.target.value)} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
+          <p className="text-xs leading-relaxed text-slate-500 sm:col-span-2">Перед сохранением CRM проверит ключи через Авито. Секрет зашифруется на сервере и не будет показан повторно.</p>
+          <div className="sm:col-span-2"><button className="button button-primary" type="submit" disabled={loading || Boolean(saving) || !credentialName.trim() || !clientId.trim() || !clientSecret.trim()}>{saving === "credentials" ? <LoaderCircle size={16} className="animate-spin" /> : <Plus size={16} />}{saving === "credentials" ? "Проверяем и сохраняем…" : "Проверить и сохранить ключи"}</button></div>
+        </form>}
+      </div>
       {error && <p className="form-error mt-4" role="alert">{error}</p>}
       {linkError && <p className="form-error mt-4" role="alert">{linkError} Список Авито доступен для просмотра; привязка временно отключена.</p>}
       {notice && <p className="mt-4 text-sm text-emerald-700" role="status">{notice}</p>}
