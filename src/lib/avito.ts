@@ -14,6 +14,7 @@ export type AvitoRealtimeState="connecting"|"connected"|"disconnected";
 export type AvitoProfile={id:string;name:string;profileUrl:string|null};
 export type AvitoItem={id:string;title:string;description:string;price:number|null;category:string;status:string;url:string|null;imageUrl:string|null};
 export type AvitoItemsPage={items:AvitoItem[];page:number;hasMore:boolean;fetchedAt:string};
+export type AvitoProductMetric={views:number|null;favorites:number|null;messages:number|null};
 export type AvitoLink={account_id:string;item_id:string;product_id:string};
 export type AvitoPublicationInput={accountKey:string;productId:string;address:string;managerName:string;contactPhone:string;reportEmail?:string;acceptAgreement:boolean};
 export type AvitoPublicationResult={submitted:true;productId:string;feedUrl:string;message:string};
@@ -72,6 +73,7 @@ export function createAvitoRepository(){
     async readChat(accountKey:string,chatId:string,messageIds:string[]=[]){const r=await invoke<{read?:boolean}>({action:"read_chat",accountKey,chatId,...(messageIds.length?{messageIds:messageIds.slice(-100)}:{})});if(r?.read!==true)throw new AvitoRequestError("Сервер не подтвердил отметку прочтения.",null,"invalid_read_receipt")},
     async profile(accountKey:string){return(await invoke<{profile:AvitoProfile}>({action:"profile",accountKey})).profile},
     items(accountKey:string,page:number){return invoke<AvitoItemsPage>({action:"items",accountKey,page})},
+    async productMetrics(){return(await backendRequest<{metrics:Record<string,AvitoProductMetric}>("/api/avito/product-metrics")).metrics},
     publishItem(input:AvitoPublicationInput){return invoke<AvitoPublicationResult>({action:"publish_item",...input})},
     async downloadImage(accountKey:string,imageUrl:string):Promise<Blob>{
       let response:Response;try{response=await fetch(backendUrl("/api/avito"),{method:"POST",credentials:"include",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"image",accountKey,imageUrl})})}catch{throw new Error("Не удалось загрузить фотографию объявления Авито. Повторите позже.")}

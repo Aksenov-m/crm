@@ -87,6 +87,56 @@ avitoRoutes.post("/accounts", requireUser, async (context) => {
 
 avitoRoutes.post("/", requireUser, async (context) => handler(context.req.raw));
 
+avitoRoutes.get("/product-metrics", requireUser, async (context) => {
+  const ownerId = context.get("user").id;
+  const { rows: links } = await pool.query<{ account_id: string; item_id: string; product_id: string }>(
+    "select account_id,item_id,product_id from avito_item_links where owner_id=$1 order by account_id,item_id",
+    [ownerId],
+  );
+  if (!links.length) return context.json({ metrics: {} }, 200, { "Cache-Control": "private, no-store" });
+
+  const grouped = new Map<string, Map<string, string[]>>();
+  for (const link of links) {
+    const items = grouped.get(link.account_id) || new Map<string, string[]>();
+    const products = items.get(link.item_id) || [];
+    products.push(link.product_id);
+    items.set(link.item_id, products);
+    grouped.set(link.account_id, items);
+  }
+  const metrics = new Map<string, { views: number | null; favorites: number | null; messages: number | null }>();
+  const cookie = context.req.header("cookie") || "";
+  const origin = (process.env.APP_ORIGINS || "https://proaksenov.ru").split(",").map((value) => value.trim()).find(Boolean) || "https://proaksenov.ru";
+  for (const [accountId, items] of grouped) {
+    const itemIds = [...items.keys()];
+    for (let offset = 0; offset < itemIds.length; offset += 500) {
+      const response = await handler(new Request("http://backend/api/avito", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookie, Origin: origin },
+        body: JSON.stringify({ action: "item_metrics", accountId, itemIds: itemIds.slice(offset, offset + 500) }),
+      }));
+      if (!response.ok) continue;
+      const payload = await response.json().catch(() => null) as { metrics?: unknown } | null;
+      if (!Array.isArray(payload?.metrics)) continue;
+      for (const value of payload.metrics) {
+        if (!value || typeof value !== "object") continue;
+        const row = value as Record<string, unknown>;
+        const itemId = typeof row.itemId === "string" ? row.itemId : "";
+        const productIds = items.get(itemId) || [];
+        if (!productIds.length) continue;
+        for (const productId of productIds) {
+          const current = metrics.get(productId) || { views: null, favorites: null, messages: null };
+          for (const key of ["views", "favorites", "messages"] as const) {
+            const count = row[key];
+            if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) current[key] = (current[key] ?? 0) + count;
+          }
+          metrics.set(productId, current);
+        }
+      }
+    }
+  }
+  return context.json({ metrics: Object.fromEntries(metrics) }, 200, { "Cache-Control": "private, no-store" });
+});
+
 avitoRoutes.get("/callback", async (context) => {
   const user = await resolveUserFromCookie(context.req.header("cookie") || "");
   if (!user) return context.text("Войдите в CRM и повторите подключение Авито.", 401);

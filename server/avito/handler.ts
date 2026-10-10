@@ -512,7 +512,7 @@ export function createAvitoHandler(dependencies: Dependencies) {
         await completeOAuth(account, text(input.code), callbackState.redirectUri);
         return respond(200, { connected: true, accountKey: account.key, returnOrigin: callbackState.returnOrigin });
       }
-      const account = input.action === "update_price"
+      const account = input.action === "update_price" || input.action === "item_metrics"
         ? await accountByAvitoId(accounts, identifier(input.accountId))
         : accounts.find(({ key }) => key === input.accountKey);
       if (!account) throw new ApiError(403, "account_not_allowed", "Аккаунт Авито недоступен этому пользователю.");
@@ -520,6 +520,94 @@ export function createAvitoHandler(dependencies: Dependencies) {
       if (input.action === "profile") {
         const data = await avitoGet(account, "/core/v1/accounts/self");
         return respond(200, { profile: { id: identifier(data.id), name: text(data.name, account.name), profileUrl: avitoUrl(data.profile_url) } });
+      }
+      if (input.action === "item_metrics") {
+        if (!Array.isArray(input.itemIds) || !input.itemIds.length || input.itemIds.length > 500) throw new ApiError(400, "invalid_request", "Укажите объявления для загрузки статистики.");
+        const itemIds = [...new Set(input.itemIds.map(identifier))];
+        const profile = await avitoGet(account, "/core/v1/accounts/self");
+        const accountId = identifier(profile.id);
+        const endDate = new Date(now());
+        endDate.setUTCDate(endDate.getUTCDate() - 1);
+        const startDate = new Date(endDate);
+        startDate.setUTCDate(startDate.getUTCDate() - 89);
+        const dateTo = endDate.toISOString().slice(0, 10);
+        const dateFrom = startDate.toISOString().slice(0, 10);
+        const byItem = new Map<string, { views: number | null; favorites: number | null; messages: number | null }>();
+        for (const itemId of itemIds) byItem.set(itemId, { views: null, favorites: null, messages: null });
+        try {
+          for (let offset = 0; offset < itemIds.length; offset += 100) {
+            const batch = itemIds.slice(offset, offset + 100);
+            const response = await avitoPost(account, `/stats/v1/accounts/${accountId}/items`, {
+              dateFrom, dateTo, fields: ["views", "contacts", "favorites"], itemIds: batch,
+            });
+            const data = await json(response);
+            const result = optionalObject(data.result);
+            if (!Array.isArray(result.items)) continue;
+            for (const value of result.items) {
+              const row = optionalObject(value);
+              let itemId: string;
+              try { itemId = identifier(row.itemId); } catch { continue; }
+              const target = byItem.get(itemId);
+              const dailyRows = row.stats;
+              if (!target || !Array.isArray(dailyRows)) continue;
+              const total = (key: string, fallback: string) => dailyRows.reduce<number>((sum, daily: unknown) => {
+                const count = optionalObject(daily);
+                const value = count[key] ?? count[fallback];
+                return sum + (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+              }, 0);
+              target.views = total("views", "uniqViews");
+              target.favorites = total("uniqFavorites", "favorites");
+            }
+          }
+        } catch { /* Messaging counts can still be returned when statistics access is unavailable. */ }
+
+        try {
+          const targetIds = new Set(itemIds);
+          const chats: Array<{ id: string; itemId: string }> = [];
+          for (let offset = 0; offset <= 1000; offset += 50) {
+            const data = await avitoGet(account, `/messenger/v2/accounts/${accountId}/chats?limit=50&offset=${offset}&chat_types=u2i,u2u`);
+            if (!Array.isArray(data.chats)) throw new ApiError(502, "invalid_response", "Авито вернуло некорректный список чатов.");
+            for (const value of data.chats) {
+              const row = optionalObject(value);
+              const context = optionalObject(optionalObject(row.context).value);
+              let itemId = "";
+              try { itemId = identifier(context.id); } catch { continue; }
+              if (targetIds.has(itemId) && text(row.id)) chats.push({ id: text(row.id), itemId });
+            }
+            if (data.chats.length < 50) break;
+          }
+          const incomingByItem = new Map<string, number>();
+          for (const itemId of itemIds) incomingByItem.set(itemId, 0);
+          let failed = false;
+          let nextChat = 0;
+          const workers = Array.from({ length: Math.min(4, chats.length) }, async () => {
+            while (nextChat < chats.length && !failed) {
+              const chat = chats[nextChat++];
+              try {
+                for (let offset = 0; offset <= 1000; offset += 50) {
+                  const raw = await avitoGetValue(account, `/messenger/v3/accounts/${accountId}/chats/${encodeURIComponent(chat.id)}/messages/?limit=50&offset=${offset}`);
+                  const wrapper = optionalObject(raw);
+                  const messages = Array.isArray(raw) ? raw
+                    : Array.isArray(wrapper.messages) ? wrapper.messages
+                    : Array.isArray(wrapper.resources) ? wrapper.resources
+                    : Array.isArray(wrapper.items) ? wrapper.items
+                    : Array.isArray(wrapper.data) ? wrapper.data
+                    : null;
+                  if (!messages) throw new ApiError(502, "invalid_response", "Авито вернуло некорректную историю сообщений.");
+                  incomingByItem.set(chat.itemId, (incomingByItem.get(chat.itemId) || 0) + messages.filter((message: unknown) => {
+                    const row = optionalObject(message);
+                    return row.direction === "in" && row.type !== "deleted";
+                  }).length);
+                  if (messages.length < 50) break;
+                }
+              } catch { failed = true; }
+            }
+          });
+          await Promise.all(workers);
+          if (!failed) for (const [itemId, count] of incomingByItem) byItem.get(itemId)!.messages = count;
+        } catch { /* Keep any statistics already loaded if Messenger is unavailable. */ }
+
+        return respond(200, { accountId, dateFrom, dateTo, metrics: [...byItem].map(([itemId, metrics]) => ({ itemId, ...metrics })) });
       }
       if (["webhook_status", "enable_webhook"].includes(text(input.action))) {
         let secret: string;
