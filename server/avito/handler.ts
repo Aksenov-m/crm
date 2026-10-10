@@ -252,7 +252,7 @@ export function createAvitoHandler(dependencies: Dependencies) {
     const data = await json(response);
     if (text(data.error)) throw await oauthTokenError(response);
     const refreshed = await saveOAuthToken(account, data, token.refreshToken);
-    tokens.set(cacheKey(account), { value: refreshed.accessToken, expiresAt: Math.max(now(), refreshed.expiresAt - 60000) });
+    tokens.set(`auto:${cacheKey(account)}`, { value: refreshed.accessToken, expiresAt: Math.max(now(), refreshed.expiresAt - 60000) });
     return refreshed.accessToken;
   }
   async function beginOAuth(account: Account, returnOrigin: string) {
@@ -303,7 +303,7 @@ export function createAvitoHandler(dependencies: Dependencies) {
     if (text(data.error)) throw new ApiError(502, "avito_auth", "Авито не подтвердило OAuth-подключение. Запустите подключение ещё раз.");
     try {
       const token = await saveOAuthToken(account, data);
-      tokens.set(cacheKey(account), { value: token.accessToken, expiresAt: Math.max(now(), token.expiresAt - 60000) });
+      tokens.set(`auto:${cacheKey(account)}`, { value: token.accessToken, expiresAt: Math.max(now(), token.expiresAt - 60000) });
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new ApiError(503, "oauth_storage", "Авито подтвердило доступ, но сохранить токены не удалось. Проверьте базу данных.");
@@ -352,6 +352,14 @@ export function createAvitoHandler(dependencies: Dependencies) {
       const token = await accessToken(account, mode);
       const response = await request(`${API}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
       if (response.status === 401 && attempt === 0) { tokens.delete(`${mode}:${cacheKey(account)}`); continue; }
+      // Avito can return 402 for a chat and then accept the same GET with the
+      // same token. Retry once before reporting a subscription restriction.
+      // This is limited to reads; sending and other writes keep their policy.
+      if (response.status === 402 && attempt === 0 && path.startsWith("/messenger/")) {
+        await response.body?.cancel().catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
       if (!response.ok) throw await upstreamError(response);
       try { return await response.json(); }
       catch { throw new ApiError(502, "invalid_response", "Авито вернуло некорректный ответ."); }

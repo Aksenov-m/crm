@@ -14,6 +14,7 @@
     "backend:create-admin": "node --env-file=.env.backend --import tsx server/scripts/create-admin.ts",
     "test": "tsx --test tests/crm.test.ts tests/crm-repository.test.ts tests/avito-handler.test.ts tests/avito-repository.test.ts tests/avito-webhook.test.ts tests/avito-feed.test.ts tests/avito-messenger-sql.test.ts",
     "test:e2e": "playwright test",
+    "test:avito-messenger": "tsx --test tests/avito-messenger-retry.test.ts",
     "avito:bundle": "node scripts/build-avito-function.mjs"
   },
   "dependencies": {
