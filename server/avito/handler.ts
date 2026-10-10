@@ -538,8 +538,8 @@ export function createAvitoHandler(dependencies: Dependencies) {
           for (let offset = 0; offset < itemIds.length; offset += 100) {
             const batch = itemIds.slice(offset, offset + 100);
             const response = await avitoPost(account, `/stats/v1/accounts/${accountId}/items`, {
-              dateFrom, dateTo, fields: ["views", "contacts", "favorites"], itemIds: batch,
-            });
+              dateFrom, dateTo, fields: ["views", "contacts", "favorites"], itemIds: batch.map(Number),
+            }, "client");
             const data = await json(response);
             const result = optionalObject(data.result);
             if (!Array.isArray(result.items)) continue;
