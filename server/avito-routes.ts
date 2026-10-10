@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createAvitoHandler } from "./avito/handler.js";
 import { AppEnv, requireUser, resolveUserFromCookie } from "./auth.js";
-import { avitoApiAccountsForOwner, createAvitoApiAccount } from "./avito-credentials.js";
+import { avitoApiAccountsForOwner, createAvitoApiAccount, deleteAvitoApiAccount } from "./avito-credentials.js";
 import { avitoCachedChats, avitoCachedMessages, avitoStorage, cacheAvitoMessages, connectAvitoItem } from "./avito-storage.js";
 import { pool } from "./db.js";
 
@@ -79,9 +79,21 @@ avitoRoutes.post("/accounts", requireUser, async (context) => {
 
     const account = await createAvitoApiAccount(ownerId, name, clientId, clientSecret);
     credentialAttempts.delete(ownerId);
-    return context.json({ account: { key: account.key, name: account.name } }, 201, { "Cache-Control": "no-store" });
+    return context.json({ account: { key: account.key, name: account.name, avitoUserId: avitoId } }, 201, { "Cache-Control": "no-store" });
   } catch {
     return context.json({ error: "avito_account_save_failed", message: "Не удалось сохранить ключи Авито. Повторите попытку позже." }, 503);
+  }
+});
+
+avitoRoutes.delete("/accounts/:key", requireUser, async (context) => {
+  const key = context.req.param("key") || "";
+  if (!ACCOUNT_KEY.test(key)) return context.json({ error: "invalid_account", message: "Некорректный аккаунт Авито." }, 400);
+  try {
+    const deleted = await deleteAvitoApiAccount(context.get("user").id, key);
+    if (!deleted) return context.json({ error: "not_found", message: "Подключение Авито не найдено." }, 404);
+    return context.json({ deleted: true }, 200, { "Cache-Control": "no-store" });
+  } catch {
+    return context.json({ error: "delete_failed", message: "Не удалось удалить подключение Авито. Повторите попытку позже." }, 503);
   }
 });
 

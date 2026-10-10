@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { pool } from "./db.js";
+import { inTransaction, pool } from "./db.js";
 
 export type AvitoApiAccount = {
   key: string;
@@ -69,4 +69,21 @@ export async function avitoApiAccountByKey(key: string): Promise<AvitoApiAccount
     [key],
   );
   return rows[0] ? accountFromRow(rows[0]) : null;
+}
+
+export async function deleteAvitoApiAccount(ownerId: string, key: string): Promise<boolean> {
+  return inTransaction(async (client) => {
+    const account = await client.query(
+      "select 1 from avito_api_accounts where owner_id=$1 and account_key=$2 for update",
+      [ownerId, key],
+    );
+    if (!account.rowCount) return false;
+
+    await client.query("delete from avito_oauth_states where owner_id=$1 and account_key=$2", [ownerId, key]);
+    await client.query("delete from avito_oauth_tokens where owner_id=$1 and account_key=$2", [ownerId, key]);
+    await client.query("delete from avito_publications where owner_id=$1 and account_key=$2", [ownerId, key]);
+    await client.query("delete from avito_messenger_accounts where owner_id=$1 and account_key=$2", [ownerId, key]);
+    await client.query("delete from avito_api_accounts where owner_id=$1 and account_key=$2", [ownerId, key]);
+    return true;
+  });
 }

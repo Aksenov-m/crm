@@ -502,7 +502,19 @@ export function createAvitoHandler(dependencies: Dependencies) {
       try { input = object(JSON.parse(bodyText)); } catch { throw new ApiError(400, "invalid_request", "Некорректный запрос."); }
       const databaseAccounts = await dependencies.accountsForOwner?.(ownerId) || [];
       const accounts = [...databaseAccounts.filter((account) => account.ownerId === ownerId), ...accountsFromEnv(env).filter((account) => account.ownerId === ownerId)];
-      if (input.action === "accounts") return respond(200, { accounts: accounts.map(({ key, name }) => ({ key, name })) });
+      if (input.action === "accounts") {
+        const bindings = await storage(`avito_messenger_accounts?owner_id=eq.${encodeURIComponent(ownerId)}&select=account_key,avito_user_id`).catch(() => []);
+        const accountIds = new Map<string, string>();
+        if (Array.isArray(bindings)) {
+          for (const value of bindings) {
+            const row = optionalObject(value);
+            const key = text(row.account_key);
+            const accountId = identifier(row.avito_user_id);
+            if (key && accountId) accountIds.set(key, accountId);
+          }
+        }
+        return respond(200, { accounts: accounts.map(({ key, name }) => ({ key, name, ...(accountIds.has(key) ? { avitoUserId: accountIds.get(key) } : {}) })) });
+      }
       if (!accounts.length) throw new ApiError(403, "account_not_allowed", "Сначала добавьте Client ID и Client Secret Авито в этом разделе.");
       if (input.action === "oauth_callback") {
         const callbackState = await consumeOAuthState(ownerId, text(input.state));

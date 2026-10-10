@@ -1,6 +1,6 @@
 import { backendRequest, backendUrl, BackendRequestError } from "./backend";
 
-export type AvitoAccount={key:string;name:string};
+export type AvitoAccount={key:string;name:string;avitoUserId?:string};
 export type AvitoMessage={id:string;text:string;type:string;created:number;direction:"in"|"out";isRead:boolean};
 export type AvitoChat={id:string;name:string;itemTitle:string;itemUrl:string|null;lastMessage:AvitoMessage|null};
 export type AvitoChatsPage={chats:AvitoChat[];offset:number;hasMore:boolean;warning?:string};
@@ -42,6 +42,10 @@ export function createAvitoRepository(){
     async addAccount(input:{name:string;clientId:string;clientSecret:string}):Promise<AvitoAccount>{
       try{return(await backendRequest<{account:AvitoAccount}>("/api/avito/accounts",{method:"POST",body:JSON.stringify(input)})).account}
       catch(error){if(error instanceof BackendRequestError)throw new AvitoRequestError(error.message,error.status||null,error.code);throw new AvitoRequestError("Не удалось сохранить ключи Авито. Повторите попытку.",null,"account_save_failed")}
+    },
+    async deleteAccount(accountKey:string):Promise<void>{
+      try{const result=await backendRequest<{deleted:boolean}>(`/api/avito/accounts/${encodeURIComponent(accountKey)}`,{method:"DELETE"});if(result.deleted!==true)throw new AvitoRequestError("Сервер не подтвердил удаление подключения.",null,"invalid_delete_response")}
+      catch(error){if(error instanceof BackendRequestError)throw new AvitoRequestError(error.message,error.status||null,error.code);if(error instanceof AvitoRequestError)throw error;throw new AvitoRequestError("Не удалось удалить подключение Авито. Повторите попытку позже.",null,"account_delete_failed")}
     },
     authorize(accountKey:string){return invoke<AvitoOAuthStart>({action:"oauth_start",accountKey})},
     completeOAuth(code:string,state:string,providerError=""){return invoke<AvitoOAuthResult>({action:"oauth_callback",code,state,...(providerError?{error:providerError}:{})})},

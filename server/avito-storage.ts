@@ -189,6 +189,10 @@ export async function avitoStorage(path: string, init: RequestInit = {}): Promis
     const accountKey = filter(query, "account_key");
     const accountId = filter(query, "avito_user_id");
     if (method === "GET") {
+      if (ownerId && !accountKey && !accountId) {
+        const { rows } = await pool.query("select account_key,avito_user_id from avito_messenger_accounts where owner_id=$1", [ownerId]);
+        return rows;
+      }
       const { rows } = await pool.query("select webhook_enabled,last_event_at from avito_messenger_accounts where owner_id=$1 and account_key=$2 and avito_user_id=$3", [ownerId,accountKey,accountId]);
       return rows;
     }

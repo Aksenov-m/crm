@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { CheckCircle2, ExternalLink, KeyRound, Link2, LoaderCircle, Plug, Plus, RefreshCw, Send } from "lucide-react";
+import { CheckCircle2, ExternalLink, KeyRound, Link2, LoaderCircle, Plug, Plus, RefreshCw, Send, Trash2 } from "lucide-react";
 import { createAvitoRepository, type AvitoAccount, type AvitoProfile, type AvitoItemsPage, type AvitoLink, type AvitoItem } from "@/lib/avito";
 import { formatMoney, type Product } from "@/lib/crm";
 
@@ -125,6 +125,24 @@ export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyCh
     } finally { if (mounted.current && job === generation.current) setLoading(false); }
   }
 
+  async function deleteAccount() {
+    const selected = accounts.find((account) => account.key === accountKey);
+    if (!selected || saving || loading) return;
+    const identifier = selected.avitoUserId ? `ID ${selected.avitoUserId}` : `код ${selected.key.slice(-4)}`;
+    const historyWarning = selected.avitoUserId ? " Кэш переписки этого подключения тоже будет удалён." : "";
+    if (!window.confirm(`Удалить подключение «${selected.name}» (${identifier}) из CRM? Сохранённые ключи и данные интеграции будут удалены.${historyWarning} Товары CRM и связи с объявлениями останутся. Ключи в кабинете Авито не отзываются.`)) return;
+
+    setSaving("delete"); setError(""); setNotice("");
+    try {
+      await api.deleteAccount(selected.key);
+      const remaining = accounts.filter((account) => account.key !== selected.key);
+      setAccounts(remaining); setAccountKey(remaining[0]?.key ?? "");
+      setProfile(null); setPage(null); setLinks([]); setSelection({}); setLinkError("");
+      setNotice("Подключение удалено. Товары CRM и связи с объявлениями сохранены.");
+    } catch (cause) { if (mounted.current) setError(message(cause)); }
+    finally { if (mounted.current) setSaving(null); }
+  }
+
   async function load(targetPage = 1, profileOverride: AvitoProfile | null = profile, allowWhileLoading = false, accountKeyOverride = accountKey) {
     const activeProfile = profileOverride;
     const activeAccountKey = accountKeyOverride;
@@ -199,7 +217,8 @@ export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyCh
   return <section aria-label="Подключение Авито" className="space-y-5">
     <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex items-start gap-4"><span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={23} /></span><div><h2 className="text-lg font-semibold text-slate-900">Ваш аккаунт Авито</h2><p className="mt-1 text-sm leading-relaxed text-slate-500">Подключите личный аккаунт по сохранённым ключам. После проверки здесь появятся имя и ID аккаунта.</p></div></div>
-      <div className="mt-6 flex flex-wrap items-end gap-3"><label className="field w-full min-w-0 sm:w-auto sm:flex-1">Аккаунт Авито<select aria-label="Аккаунт Авито" className="select mt-2" value={accountKey} disabled={loading || Boolean(saving) || !accounts.length} onChange={(event) => chooseAccount(event.target.value)}>{!accounts.length && <option value="">Нет настроенных аккаунтов</option>}{accounts.map((account) => <option key={account.key} value={account.key}>{account.name}</option>)}</select></label><button className="button button-primary" disabled={loading || Boolean(saving)} onClick={() => void (accounts.length ? verifyAccount() : loadAccounts())}>{loading ? <LoaderCircle size={16} className="animate-spin" /> : <RefreshCw size={16} />}{loading ? "Подключаемся…" : accounts.length ? profile ? "Проверить подключение" : "Подключить по ключам" : "Повторить подключение"}</button></div>
+      <div className="mt-6 flex flex-wrap items-end gap-3"><label className="field w-full min-w-0 sm:w-auto sm:flex-1">Аккаунт Авито<select aria-label="Аккаунт Авито" className="select mt-2" value={accountKey} disabled={loading || Boolean(saving) || !accounts.length} onChange={(event) => chooseAccount(event.target.value)}>{!accounts.length && <option value="">Нет настроенных аккаунтов</option>}{accounts.map((account) => <option key={account.key} value={account.key}>{account.name} · {account.avitoUserId ? `ID ${account.avitoUserId}` : `код ${account.key.slice(-4)}`}</option>)}</select></label><button className="button button-primary" disabled={loading || Boolean(saving)} onClick={() => void (accounts.length ? verifyAccount() : loadAccounts())}>{loading ? <LoaderCircle size={16} className="animate-spin" /> : <RefreshCw size={16} />}{loading ? "Подключаемся…" : accounts.length ? profile ? "Проверить подключение" : "Подключить по ключам" : "Повторить подключение"}</button>{accountKey && <button type="button" className="button button-secondary text-rose-700" aria-label="Удалить выбранное подключение Авито" disabled={loading || Boolean(saving)} onClick={() => void deleteAccount()}>{saving === "delete" ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}{saving === "delete" ? "Удаляем…" : "Удалить аккаунт"}</button>}</div>
+      {accounts.length > 0 && <p className="mt-2 text-xs text-slate-400">Сохранено наборов ключей: {accounts.length}. ID Авито в списке помогает отличить уже подключённый аккаунт.</p>}
       {profile && <div className="mt-5 flex flex-wrap items-center gap-2 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800"><CheckCircle2 size={17} /><span>Подключён:</span><strong>{profile.name}</strong><span>· ID {profile.id}</span>{profile.profileUrl && <a className="ml-auto inline-flex items-center gap-1 underline" href={profile.profileUrl} target="_blank" rel="noopener noreferrer">Профиль<ExternalLink size={13} /></a>}</div>}
       {profile && <button className="button button-secondary mt-4" disabled={loading || Boolean(saving)} onClick={() => void load(1)}>Обновить объявления</button>}
       <p className="mt-4 text-xs leading-relaxed text-slate-400">Ключи хранятся на сервере. Доступ к подключению есть только у назначенного владельца CRM.</p>
