@@ -54,8 +54,17 @@ avitoRoutes.post("/accounts", requireUser, async (context) => {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
     });
-    if (!tokenResponse.ok) return context.json({ error: "invalid_avito_credentials", message: "Авито не приняло ключи. Проверьте Client ID, Client Secret и настройки приложения в кабинете Авито." }, 400);
-    const tokenBody = await tokenResponse.json().catch(() => null) as { access_token?: unknown } | null;
+    const tokenBody = await tokenResponse.json().catch(() => null) as { access_token?: unknown; error?: unknown } | null;
+    const tokenError = typeof tokenBody?.error === "string" ? tokenBody.error : "";
+    if (tokenError === "unauthorized_client") {
+      return context.json({ error: "avito_client_credentials_unavailable", message: "У приложения Авито нет доступа к авторизации client_credentials. Проверьте, что это ключи Business API для вашего аккаунта и что доступ к API включён в кабинете Авито." }, 400);
+    }
+    if (tokenError === "invalid_client" || !tokenResponse.ok) {
+      return context.json({ error: "invalid_avito_credentials", message: "Авито не приняло Client ID и Client Secret. Проверьте, что скопировали оба значения из настроек одного приложения." }, 400);
+    }
+    if (tokenError) {
+      return context.json({ error: "avito_auth_rejected", message: "Авито отклонило авторизацию приложения. Проверьте настройки доступа к API в кабинете Авито." }, 400);
+    }
     const accessToken = typeof tokenBody?.access_token === "string" ? tokenBody.access_token : "";
     if (!accessToken || accessToken.length > 8192) return context.json({ error: "invalid_avito_response", message: "Авито вернуло неожиданный ответ. Повторите попытку позже." }, 502);
     const profileResponse = await fetch("https://api.avito.ru/core/v1/accounts/self", {
