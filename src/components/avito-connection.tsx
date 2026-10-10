@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { CheckCircle2, ExternalLink, Link2, LoaderCircle, Plug, RefreshCw } from "lucide-react";
+import { CheckCircle2, ExternalLink, Link2, LoaderCircle, Plug, RefreshCw, Send } from "lucide-react";
 import { createAvitoRepository, type AvitoAccount, type AvitoProfile, type AvitoItemsPage, type AvitoLink, type AvitoItem } from "@/lib/avito";
 import { formatMoney, type Product } from "@/lib/crm";
 
 const STATUS: Record<string, string> = { active: "Активно", removed: "Снято", old: "Истёк срок", blocked: "Заблокировано", rejected: "Отклонено", unknown: "Неизвестен" };
 
-export function AvitoConnection({ client, ownerId, products, onProductsChanged, onBusyChange }: { client: SupabaseClient; ownerId: string; products: Product[]; onProductsChanged: () => Promise<void>; onBusyChange: (busy: boolean) => void }) {
-  const api = useMemo(() => createAvitoRepository(client), [client]);
+export function AvitoConnection({ ownerId, products, onProductsChanged, onBusyChange }: { ownerId: string; products: Product[]; onProductsChanged: () => Promise<void>; onBusyChange: (busy: boolean) => void }) {
+  const api = useMemo(() => createAvitoRepository(), []);
   const [accounts, setAccounts] = useState<AvitoAccount[]>([]);
   const [accountKey, setAccountKey] = useState("");
   const [profile, setProfile] = useState<AvitoProfile | null>(null);
@@ -21,6 +20,14 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
   const [error, setError] = useState("");
   const [linkError, setLinkError] = useState("");
   const [notice, setNotice] = useState("");
+  const [publishProductId, setPublishProductId] = useState("");
+  const [publishAddress, setPublishAddress] = useState("");
+  const [publishManagerName, setPublishManagerName] = useState("");
+  const [publishPhone, setPublishPhone] = useState("");
+  const [publishEmail, setPublishEmail] = useState("");
+  const [publishAgreement, setPublishAgreement] = useState(false);
+  const [publishError, setPublishError] = useState("");
+  const [publishing, setPublishing] = useState(false);
   const mounted = useRef(false);
   const generation = useRef(0);
   const saveLock = useRef(false);
@@ -173,6 +180,17 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
     finally { saveLock.current = false; if (mounted.current) setSaving(null); }
   }
 
+  async function publish() {
+    if (!accountKey || !publishProductId || publishing || loading || !publishAgreement) return;
+    setPublishing(true); setPublishError(""); setNotice("");
+    try {
+      const result = await api.publishItem({ accountKey, productId: publishProductId, address: publishAddress, managerName: publishManagerName, contactPhone: publishPhone, reportEmail: publishEmail, acceptAgreement: publishAgreement });
+      setNotice(result.message);
+      await onProductsChanged();
+    } catch (cause) { if (mounted.current) setPublishError(message(cause)); }
+    finally { if (mounted.current) setPublishing(false); }
+  }
+
   return <section aria-label="Подключение Авито" className="space-y-5">
     <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex items-start gap-4"><span className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Plug size={23} /></span><div><h2 className="text-lg font-semibold text-slate-900">Ваш аккаунт Авито</h2><p className="mt-1 text-sm leading-relaxed text-slate-500">Подключите личный аккаунт по сохранённым ключам. После проверки здесь появятся имя и ID аккаунта.</p></div></div>
@@ -184,6 +202,7 @@ export function AvitoConnection({ client, ownerId, products, onProductsChanged, 
       {linkError && <p className="form-error mt-4" role="alert">{linkError} Список Авито доступен для просмотра; привязка временно отключена.</p>}
       {notice && <p className="mt-4 text-sm text-emerald-700" role="status">{notice}</p>}
     </div>
+    {profile && <div className="rounded-2xl border border-blue-100 bg-blue-50/50 p-5 sm:p-6"><div className="flex items-start gap-3"><Send size={19} className="mt-1 text-blue-600" /><div><h2 className="text-lg font-semibold text-slate-900">Опубликовать объявление на Авито</h2><p className="mt-1 text-sm leading-relaxed text-slate-600">CRM передаст карточку в Авито Автозагрузку. Авито проверит категорию, обязательные поля и фото, поэтому появление ссылки может занять время.</p></div></div><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="field sm:col-span-2">Товар<select className="select mt-2" value={publishProductId} disabled={publishing || loading} onChange={(event) => setPublishProductId(event.target.value)}><option value="">Выберите товар</option>{products.filter((product) => product.stage !== "sold").map((product) => <option key={product.id} value={product.id}>{product.title} — {formatMoney(product.price)}</option>)}</select></label><label className="field sm:col-span-2">Адрес, город и улица<input className="input mt-2" value={publishAddress} disabled={publishing || loading} onChange={(event) => setPublishAddress(event.target.value)} placeholder="Москва, улица ..." /></label><label className="field">Имя продавца<input className="input mt-2" value={publishManagerName} disabled={publishing || loading} onChange={(event) => setPublishManagerName(event.target.value)} placeholder="Михаил" /></label><label className="field">Телефон<input className="input mt-2" value={publishPhone} disabled={publishing || loading} onChange={(event) => setPublishPhone(event.target.value)} placeholder="+7 900 000-00-00" /></label><label className="field sm:col-span-2">Почта для отчётов Авито<input className="input mt-2" type="email" value={publishEmail} disabled={publishing || loading} onChange={(event) => setPublishEmail(event.target.value)} placeholder="оставьте пустым, если уже настроена" /></label></div><label className="mt-4 flex items-start gap-2 text-sm text-slate-600"><input type="checkbox" className="mt-1" checked={publishAgreement} disabled={publishing || loading} onChange={(event) => setPublishAgreement(event.target.checked)} /><span>Я принимаю правила Авито Автозагрузки и понимаю, что запуск может привести к платной публикации объявления.</span></label>{publishError && <p className="form-error mt-4" role="alert">{publishError}</p>}<button className="button button-primary mt-4" disabled={publishing || loading || !publishProductId || !publishAgreement} onClick={() => void publish()}>{publishing ? <LoaderCircle size={16} className="animate-spin" /> : <Send size={16} />}{publishing ? "Передаём в Авито…" : "Опубликовать на Авито"}</button></div>}
     {page && <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-900">Объявления Авито</h2><p className="mt-1 text-xs text-slate-400">Загружено {new Date(page.fetchedAt).toLocaleString("ru-RU")} · страница {page.page}</p></div><span className="pill">{page.items.length} на странице</span></div><p className="mt-4 text-sm leading-relaxed text-slate-500">Объявления автоматически добавляются в CRM после проверки аккаунта. Название, цена, категория и главное фото переносятся; данные уже связанных товаров не перезаписываются.</p>
       <div className="mt-5 space-y-3">{page.items.map((item) => {
         const linked = links.find((link) => link.item_id === item.id);

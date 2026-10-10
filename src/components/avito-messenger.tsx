@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { Trash2 } from "lucide-react";
 import { AvitoRequestError, mergeAvitoMessages, type AvitoAccount, type AvitoChat, type AvitoMessage, type AvitoMessageEvent, type AvitoMessagesPage, type AvitoRealtimeState, type AvitoWebhookStatus, type createAvitoRepository } from "@/lib/avito";
 
 type Repository = ReturnType<typeof createAvitoRepository>;
@@ -112,7 +113,7 @@ function WebhookControl({ repository, accountKey }: { repository: Repository; ac
     finally { setBusy(false); }
   }
   return <div className="space-y-2 rounded-xl border border-slate-200 p-3 text-sm">
-    <p>{status?.enabled ? "Webhook зарегистрирован в Авито." : "Webhook ещё не подключён. Для автоматического получения сообщений настройте приёмник в Supabase."}</p>
+    <p>{status?.enabled ? "Webhook зарегистрирован в Авито." : "Webhook ещё не подключён. Для автоматического получения сообщений настройте адрес сервера CRM."}</p>
     {status?.lastEventAt && <p className="text-slate-500">Последнее событие: {new Date(status.lastEventAt).toLocaleString("ru-RU")}</p>}
     {error && <p role="alert" className="form-error">{error}</p>}
     <button className="button button-secondary" disabled={busy} onClick={() => { void enable(); }}>{busy ? "Подключаем…" : status?.enabled ? "Проверить регистрацию webhook" : "Подключить webhook"}</button>
@@ -195,34 +196,51 @@ function Chat({ repository, accountKey, chat, events, reconnect, onBusyChange }:
   const [sendError, setSendError] = useState("");
   const [needsCheck, setNeedsCheck] = useState(false);
   const [sent, setSent] = useState<AvitoMessage[]>([]);
+  const [deletedMessages, setDeletedMessages] = useState<AvitoMessage[]>([]);
+  const [deletingId, setDeletingId] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const pendingSend = useRef(false);
   const end = useRef<HTMLDivElement>(null);
   const load = useCallback(() => repository.messages(accountKey, chat.id, offset), [repository, accountKey, chat.id, offset]);
-  const history = useLiveQuery(load, sending, reconnect);
+  const history = useLiveQuery(load, sending || !!deletingId, reconnect);
   const current = history.data?.offset === offset ? history.data : null;
-  const messages = mergeAvitoMessages(current?.messages ?? [], offset === 0 ? sent : [], offset === 0 ? events.filter((event) => event.chatId === chat.id).map((event) => event.message) : []);
+  const messages = mergeAvitoMessages(current?.messages ?? [], offset === 0 ? [...sent, ...deletedMessages] : [], offset === 0 ? events.filter((event) => event.chatId === chat.id).map((event) => event.message) : []);
   const receipt = useReadReceipt(repository, accountKey, chat.id, messages.length ? { messages, offset, hasMore: current?.hasMore ?? false } : current);
   const lastId = offset === 0 ? messages.at(-1)?.id : "";
   useEffect(() => { end.current?.scrollIntoView({ block: "nearest" }); }, [lastId]);
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 60 * 1000); return () => window.clearInterval(timer); }, []);
   async function send(event: FormEvent) {
     event.preventDefault();
     if (pendingSend.current || needsCheck || !draft.trim() || draft.trim().length > 1000 || offset !== 0) return;
     pendingSend.current = true; setSending(true); onBusyChange(true); setSendError("");
     try {
       const message = await repository.sendMessage(accountKey, chat.id, draft.trim());
-      setSent((items) => [...items, message]); setDraft("");
+      setSent((items) => [...items, message]); setDraft(""); setNow(Date.now());
     } catch (cause) { setSendError(`${errorText(cause)} Перед повтором обновите переписку и проверьте, не появилось ли сообщение.`); setNeedsCheck(true); }
     finally { pendingSend.current = false; setSending(false); onBusyChange(false); }
+  }
+  async function removeMessage(message: AvitoMessage) {
+    const age = now / 1000 - message.created;
+    if (deletingId || sending || message.direction !== "out" || message.type === "deleted" || age < 0 || age >= 60 * 60) return;
+    if (!window.confirm("Удалить это сообщение? Авито заменит его на отметку «Сообщение удалено». Действие необратимо.")) return;
+    setDeletingId(message.id); setDeleteError(""); onBusyChange(true);
+    try {
+      const deleted = await repository.deleteMessage(accountKey, chat.id, message.id, message.created);
+      setDeletedMessages((items) => [...items.filter((item) => item.id !== deleted.id), deleted]);
+    } catch (cause) { setDeleteError(errorText(cause)); }
+    finally { setDeletingId(""); onBusyChange(false); }
   }
   return <div className="flex min-w-0 flex-col">
     <header className="border-b border-slate-100 p-4"><h3 className="font-semibold">{chat.name}</h3>{chat.itemUrl ? <a className="text-sm text-blue-600" href={chat.itemUrl} target="_blank" rel="noreferrer">{chat.itemTitle || "Объявление в Авито"}</a> : <p className="text-sm text-slate-500">{chat.itemTitle || "Личный диалог"}</p>}</header>
     <div className="flex flex-wrap gap-2 p-3"><button className="button button-secondary" disabled={sending || history.loading} onClick={history.refresh}>Обновить переписку</button><button className="button button-secondary" disabled={sending || history.loading || offset === 0} onClick={() => setOffset((value) => value - 50)}>Более новые</button><button className="button button-secondary" disabled={sending || history.loading || !current?.hasMore} onClick={() => setOffset((value) => value + 50)}>Более ранние</button></div>
     {history.error && <p role="alert" className="form-error px-4">{history.error}</p>}
     {current?.warning && <p role="status" className="px-4 py-2 text-sm text-amber-700">{current.warning}</p>}
+    {deleteError && <p role="alert" className="form-error px-4">{deleteError}</p>}
     {receipt.error && <div role="status" className="space-y-2 px-4 py-3 text-sm text-amber-700"><p>Сообщения загружены, но Авито не подтвердило прочтение. {receipt.error}</p><button className="button button-secondary" disabled={receipt.loading || sending} onClick={receipt.retry}>{receipt.loading ? "Сохраняем прочтение…" : "Повторить отметку прочтения"}</button></div>}
     <div role="log" aria-label={`Переписка Авито: ${chat.name}`} aria-live="polite" className="h-96 space-y-3 overflow-y-auto bg-slate-50 p-4">
       {history.loading && !current && <p role="status">Загружаем сообщения…</p>}
-      {messages.map((message) => <div key={message.id} className={`flex ${message.direction === "out" ? "justify-end" : "justify-start"}`}><div className={`max-w-[90%] rounded-xl p-3 ${message.direction === "out" ? "bg-blue-600 text-white" : "border border-slate-200 bg-white"}`}><p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p><p className="mt-1 text-xs opacity-70">{new Date(message.created * 1000).toLocaleString("ru-RU")}{message.direction === "out" ? " · Отправлено в Авито" : ""}</p></div></div>)}
+      {messages.map((message) => { const age = now / 1000 - message.created; const canDelete = message.direction === "out" && message.type !== "deleted" && age >= 0 && age < 60 * 60; return <div key={message.id} className={`flex items-start gap-2 ${message.direction === "out" ? "justify-end" : "justify-start"}`}><div className={`max-w-[90%] rounded-xl p-3 ${message.direction === "out" ? "bg-blue-600 text-white" : "border border-slate-200 bg-white"}`}><p className={`whitespace-pre-wrap break-words [overflow-wrap:anywhere] ${message.type === "deleted" ? "italic opacity-80" : ""}`}>{message.text}</p><p className="mt-1 text-xs opacity-70">{new Date(message.created * 1000).toLocaleString("ru-RU")}{message.direction === "out" ? message.type === "deleted" ? " · Удалено в Авито" : " · Отправлено в Авито" : ""}</p></div>{canDelete && <button type="button" className="icon-button mt-2" aria-label="Удалить сообщение" title="Удалить сообщение" disabled={sending || !!deletingId} onClick={() => { void removeMessage(message); }}><Trash2 size={15} /></button>}</div>; })}
       {!history.loading && current && !messages.length && <p>В этом диалоге пока нет сообщений.</p>}<div ref={end} />
     </div>
     <form onSubmit={send} className="space-y-2 border-t border-slate-100 p-4"><label className="field" htmlFor={replyId}>Ответ в Авито</label><textarea id={replyId} className="input min-h-24" value={draft} maxLength={1000} disabled={sending} onChange={(event) => setDraft(event.target.value)} /><p className="text-xs text-slate-500">{draft.length}/1000 · Текст будет отправлен покупателю, не сохранён как черновик.</p>

@@ -1,3 +1,8 @@
+
+# Устаревшая инструкция
+
+Проект переходит на собственный PostgreSQL и API в Docker. Эта инструкция описывает прежнюю версию на Supabase и для нового развёртывания не нужна. Следуйте [инструкции собственного backend](SELF_HOSTED_BACKEND.md); схема новой базы находится в [015](015_create_self_hosted_backend_schema.sql).
+
 # Подготовка Supabase для CRM «ПроЛот»
 
 Дата проверки документации: 22 сентября 2026 года.
@@ -44,7 +49,7 @@
 
 Вход по паролю не использует переход по письму. Эти настройки задают разрешённые адреса; обработка приглашений, подтверждения email по ссылке и сброса пароля в интерфейсе пока не реализована. Создание и восстановление доступа выполняет владелец через панель Supabase.
 
-`https://proaksenov.ru/api/avito/callback` — отдельный callback OAuth Авито. Он не является Redirect URL входа Supabase: страница принимает `code`, а серверная Edge Function обменивает его на токены.
+`https://proaksenov.ru/api/avito/callback,` — отдельный callback OAuth Авито; запятая в конце является частью URL. Он не является Redirect URL входа Supabase: страница принимает `code`, а серверная Edge Function обменивает его на токены.
 
 Источник: [Redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls).
 
@@ -61,7 +66,9 @@
 
 Таблицы и их RLS создаются одной транзакцией в каждом файле. Не нужно включать публичный доступ через дополнительные шаблоны политик. Ключ API сам по себе не даёт доступа к данным CRM: нужен вход пользователя, затем RLS пропускает только его строки.
 
-Для OAuth Authorization Code дополнительно выполните [011_create_avito_oauth.sql](011_create_avito_oauth.sql) после SQL 009. SQL 012 можно оставить выполненным, но для OAuth нужен только зарегистрированный production callback `https://proaksenov.ru/api/avito/callback`; локальный запуск возвращается на `127.0.0.1` после обработки этого callback. Файлы создают закрытое хранилище токенов и одноразовых состояний OAuth; доступ к нему есть только у `service_role`/Secret key Edge Functions.
+Для OAuth Authorization Code дополнительно выполните [011_create_avito_oauth.sql](011_create_avito_oauth.sql) и [012_allow_local_avito_oauth_redirect.sql](012_allow_local_avito_oauth_redirect.sql) после SQL 009, затем [014_update_avito_oauth_redirect.sql](014_update_avito_oauth_redirect.sql). SQL 014 меняет production callback на зарегистрированный URL `https://proaksenov.ru/api/avito/callback,`; локальный запуск возвращается на `127.0.0.1` после обработки этого callback. Файлы создают закрытое хранилище токенов и одноразовых состояний OAuth; доступ к нему есть только у `service_role`/Secret key Edge Functions.
+
+Для публикации новых объявлений через Авито Автозагрузку после таблицы товаров и Storage выполните [013_create_avito_publications.sql](013_create_avito_publications.sql). Таблица хранит только параметры фида и статус; ключи Авито и токены в неё не записываются.
 
 В Table Editor → public появятся `products`, `buyers`, `messages`. Пустые таблицы на этом этапе нормальны. Демоданные автоматически не переносятся. Данные пользователя CRM хранятся в управляемой Supabase таблице `auth.users`; отдельная таблица паролей не создаётся.
 

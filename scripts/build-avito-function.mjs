@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 // Self-contained Dashboard files. No env files or credentials are read.
 const shared = (await readFile(new URL("../supabase/functions/_shared/avito-messenger.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
-for (const [name, entry, directoryName] of [["avito", "createAvitoHandler", "avito-function"], ["avito-webhook", "createAvitoWebhookHandler", "avito-webhook-function"]]) {
+for (const [name, entry, directoryName] of [["avito", "createAvitoHandler", "avito-function"], ["avito-webhook", "createAvitoWebhookHandler", "avito-webhook-function"], ["avito-feed", "createAvitoFeedHandler", "avito-feed-function"]]) {
   const source = await readFile(new URL(`../supabase/functions/${name}/handler.ts`, import.meta.url), "utf8");
   if (!source.includes(`export function ${entry}`)) throw new Error(`Missing entry: ${entry}`);
   const standalone = source.replace(/^import .*from "\.\.\/_shared\/avito-messenger\.ts";\r?\n/m, "").replace(`export function ${entry}`, `function ${entry}`);

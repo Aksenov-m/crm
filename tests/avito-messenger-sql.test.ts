@@ -22,11 +22,14 @@ test("real PostgreSQL migration enforces owner RLS, service-only writes, dedupli
     await db.exec(await readFile(new URL("../docs/010_verify_avito_messenger.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../docs/011_create_avito_oauth.sql", import.meta.url), "utf8"));
     await db.exec(await readFile(new URL("../docs/012_allow_local_avito_oauth_redirect.sql", import.meta.url), "utf8"));
+    await db.exec(await readFile(new URL("../docs/014_update_avito_oauth_redirect.sql", import.meta.url), "utf8"));
     const rows = await db.query<{ count: number }>("select count(*)::integer from public.avito_messenger_messages");
     assert.equal(rows.rows[0].count, 0, "verification must roll back its fixtures");
     const publication = await db.query("select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='avito_messenger_messages'");
     assert.equal(publication.rows.length, 1);
     const oauthTables = await db.query<{ count: number }>("select count(*)::integer from information_schema.tables where table_schema='public' and table_name in ('avito_oauth_states','avito_oauth_tokens')");
     assert.equal(oauthTables.rows[0].count, 2);
+    const redirectConstraint = await db.query<{ definition: string }>("select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid='public.avito_oauth_states'::regclass and conname='avito_oauth_states_redirect_uri_check'");
+    assert.match(redirectConstraint.rows[0].definition, /callback,/);
   } finally { await db.close(); }
 });
