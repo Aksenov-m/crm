@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { Check, ImagePlus, LoaderCircle, Sparkles, Upload, X } from "lucide-react";
+import { generateProductImage } from "@/lib/backend";
 import { generateListing, STAGES, type Product, type ProductStage } from "@/lib/crm";
 import { getCrmErrorMessage } from "@/lib/crm-repository";
 
@@ -24,6 +25,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
   const readerRef = useRef<FileReader | null>(null);
   const imageElementRef = useRef<HTMLImageElement | null>(null);
   const imageJobRef = useRef(0);
+  const imageGenerationControllerRef = useRef<AbortController | null>(null);
   const generationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [image, setImage] = useState(product?.image ?? "");
   const [brief, setBrief] = useState(product?.description ?? "");
@@ -35,11 +37,12 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
   const [generated, setGenerated] = useState(Boolean(product));
   const [generating, setGenerating] = useState(false);
   const [imageLoading, setImageLoading] = useState(false);
+  const [imageGenerating, setImageGenerating] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const saveInProgress = useRef(false);
   const newId = useRef<string | null>(null);
-  const busy = generating || imageLoading || saving;
+  const busy = generating || imageLoading || imageGenerating || saving;
 
   function close() { if (!saveInProgress.current) onClose(); }
 
@@ -52,6 +55,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
     return () => {
       if (generationTimer.current) clearTimeout(generationTimer.current);
       imageJobRef.current += 1;
+      imageGenerationControllerRef.current?.abort();
       readerRef.current?.abort();
       if (imageElementRef.current) {
         imageElementRef.current.onload = null;
@@ -71,10 +75,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
     return () => input.removeEventListener("cancel", stopFilePickerCancel);
   }, []);
 
-  function readImage(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+  function processImage(file: File, maxBytes = MAX_IMAGE_BYTES) {
     setError("");
     const job = ++imageJobRef.current;
     readerRef.current?.abort();
@@ -83,7 +84,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
       setError("Выберите фотографию в формате JPEG, PNG или WebP.");
       return;
     }
-    if (file.size > MAX_IMAGE_BYTES) {
+    if (file.size > maxBytes) {
       setImageLoading(false);
       setError("Фотография слишком большая. Выберите файл размером до 5 МБ.");
       return;
@@ -129,6 +130,45 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
       reader.readAsDataURL(file);
     } catch {
       fail();
+    }
+  }
+
+  function readImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) processImage(file);
+  }
+
+  async function generatePhoto() {
+    if (busy || demo) return;
+    const productDescription = brief.trim();
+    if (!productDescription) {
+      setError("Сначала кратко опишите товар — по этому описанию будет создано фото.");
+      descriptionRef.current?.focus();
+      return;
+    }
+    if (!category) {
+      setError("Сначала выберите категорию товара.");
+      return;
+    }
+
+    setError("");
+    const controller = new AbortController();
+    imageGenerationControllerRef.current = controller;
+    setImageGenerating(true);
+    try {
+      const result = await generateProductImage({
+        title: title.trim() || product?.title || "",
+        category,
+        description: productDescription,
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      processImage(new File([result], "generated-product.jpg", { type: "image/jpeg" }), 16 * 1024 * 1024);
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Не удалось создать фото товара. Повторите попытку.");
+    } finally {
+      if (imageGenerationControllerRef.current === controller) imageGenerationControllerRef.current = null;
+      setImageGenerating(false);
     }
   }
 
@@ -276,6 +316,15 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
                 )}
               </button>
               <p id={`${formId}-photo-hint`} className="photo-hint muted">JPEG, PNG или WebP · до 5 МБ</p>
+              {!demo && (
+                <div className="photo-generation">
+                  <button type="button" className="button button-secondary" onClick={generatePhoto} disabled={busy}>
+                    {imageGenerating ? <LoaderCircle size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                    {imageGenerating ? "Создаём фото…" : image ? "Создать другое фото с GPT" : "Создать фото с GPT"}
+                  </button>
+                  <p className="photo-hint muted">Иллюстрация будет создана по описанию. Проверьте её соответствие товару перед публикацией.</p>
+                </div>
+              )}
               {imageLoading && image && <p className="muted" role="status">Готовим новую фотографию…</p>}
               {!product && !generated && (
                 <button type="button" className="button button-ghost" onClick={useExample} disabled={busy}>Попробовать на примере</button>
@@ -337,7 +386,7 @@ export function ProductEditor({ product, initialStage, onClose, onSave, demo = f
               </label>
             </section>
           )}
-          <div aria-live="polite" className="sr-only">{generating ? "Создаём объявление" : generated ? "Текст объявления доступен для редактирования" : ""}</div>
+          <div aria-live="polite" className="sr-only">{imageGenerating ? "Создаём изображение товара" : generating ? "Создаём объявление" : generated ? "Текст объявления доступен для редактирования" : ""}</div>
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>
 

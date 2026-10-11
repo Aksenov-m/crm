@@ -246,6 +246,9 @@ h1 { margin: 0; font-size: 28px; line-height: 1.3; letter-spacing: -.9px; font-w
 .photo-placeholder span { font-size: 10px; }
 .photo-action { position: absolute; bottom: 8px; left: 8px; right: 8px; background: #ffffffed; color: #5b7197; text-align: center; border-radius: 6px; padding: 8px; font-size: 10px; backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; gap: 6px; }
 .photo-hint { color: #97a4b8; line-height: 1.7; font-size: 10px; margin-top: 9px; }
+.photo-generation { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; margin-top: 10px; }
+.photo-generation .button { width: 100%; font-size: 11px; padding: 9px 10px; }
+.photo-generation .photo-hint { margin-top: 7px; }
 .editor-fields { display: flex; flex-direction: column; gap: 16px; }
 .editor-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .generation-note { margin-top: 20px; display: flex; align-items: flex-start; gap: 9px; padding: 12px 14px; background: #f0f5ff; color: #8095b9; border-radius: 8px; font-size: 11px; line-height: 1.65; }

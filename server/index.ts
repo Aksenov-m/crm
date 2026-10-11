@@ -10,6 +10,7 @@ import { feedRoutes } from "./feed-routes.js";
 import { avitoRoutes } from "./avito-routes.js";
 import { webhookRoutes } from "./webhook-routes.js";
 import { realtimeRoutes } from "./realtime-routes.js";
+import { imageRoutes } from "./image-routes.js";
 
 const app = new Hono<AppEnv>();
 const configuredOrigins = (process.env.APP_ORIGINS || "http://127.0.0.1:3000,http://localhost:3000")
@@ -85,6 +86,7 @@ app.post("/api/auth/logout", async (context) => {
 });
 
 app.route("/api/crm", crmRoutes);
+app.route("/api/crm/images", imageRoutes);
 app.route("/api/files", fileRoutes);
 app.route("/api/avito", avitoRoutes);
 app.route("/api/avito", realtimeRoutes);

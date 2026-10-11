@@ -35,3 +35,35 @@ export async function backendRequest<T>(path: string, init: RequestInit = {}): P
   }
   return data as T;
 }
+
+export async function generateProductImage(input: { title?: string; category: string; description: string }, signal?: AbortSignal): Promise<Blob> {
+  let response: Response;
+  try {
+    response = await fetch(backendUrl("/api/crm/images/generate"), {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+  } catch {
+    if (signal?.aborted) throw new Error("Создание фото отменено.");
+    throw new Error("Не удалось подключиться к серверу CRM. Проверьте соединение и повторите попытку.");
+  }
+
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    const message = body && typeof body === "object" && "message" in body && typeof body.message === "string"
+      ? body.message
+      : `Сервер CRM ответил с ошибкой ${response.status}.`;
+    throw new Error(message);
+  }
+
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  const image = await response.blob();
+  if (contentType !== "image/jpeg" || !image.size || image.size > 16 * 1024 * 1024) {
+    throw new Error("Сервер вернул изображение в неподдерживаемом формате.");
+  }
+  return image;
+}
