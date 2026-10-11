@@ -1,0 +1,39 @@
+# Override for the MAIN CRM server, alongside docker-compose.yml.
+services:
+  image-tunnel:
+    build: ./docker/image-tunnel
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    pids_limit: 32
+    volumes:
+      - /opt/prolot-image-ssh/id_ed25519:/run/secrets/image_ssh_key:ro
+      - /opt/prolot-image-ssh/known_hosts:/run/secrets/known_hosts:ro
+    command:
+      - -NT
+      - -g
+      - -L
+      - "0.0.0.0:3010:127.0.0.1:3010"
+      - -i
+      - /run/secrets/image_ssh_key
+      - -o
+      - UserKnownHostsFile=/run/secrets/known_hosts
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - IdentitiesOnly=yes
+      - -o
+      - BatchMode=yes
+      - -o
+      - ExitOnForwardFailure=yes
+      - -o
+      - ConnectTimeout=10
+      - -o
+      - ServerAliveInterval=15
+      - -o
+      - ServerAliveCountMax=3
+      - crm-images@132.243.28.106
+    networks:
+      - private

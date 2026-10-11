@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { AppEnv, requireUser } from "./auth.js";
+import { imageProviderConfig, readImageResponse, requestImage } from "./image-provider.js";
 
 const MAX_DESCRIPTION_LENGTH = 3_000;
 const MAX_TITLE_LENGTH = 1_000;
@@ -61,9 +62,11 @@ imageRoutes.post("/generate", async (context) => {
     return context.json({ error: "invalid_product_details", message: "Добавьте описание товара и выберите категорию." }, 400);
   }
 
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    return context.json({ error: "image_generation_not_configured", message: "Генерация фото не настроена на сервере. Добавьте OPENAI_API_KEY в .env.backend и перезапустите API." }, 503);
+  let provider: ReturnType<typeof imageProviderConfig>;
+  try {
+    provider = imageProviderConfig();
+  } catch {
+    return context.json({ error: "image_generation_not_configured", message: "Генерация фото ещё не настроена. Обратитесь к владельцу CRM." }, 503);
   }
   if (isRateLimited(context.get("user").id)) {
     return context.json({ error: "image_generation_rate_limited", message: "Слишком много запросов на создание фото. Подождите минуту и попробуйте снова." }, 429);
@@ -71,27 +74,22 @@ imageRoutes.post("/generate", async (context) => {
 
   const controller = new AbortController();
   const abortFromClient = () => controller.abort();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const timeout = setTimeout(() => controller.abort(), 130_000);
   context.req.raw.signal.addEventListener("abort", abortFromClient, { once: true });
+  if (context.req.raw.signal.aborted) controller.abort();
 
   try {
-    const response = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-flare",
-        prompt: marketplacePrompt(title, category, description),
-        size: "1024x1024",
-        quality: "medium",
-        output_format: "jpeg",
-        output_compression: 80,
-        n: 1,
-      }),
-      signal: controller.signal,
-    });
+    const response = await requestImage(marketplacePrompt(title, category, description), provider, controller.signal, process.env.OPENAI_IMAGE_MODEL);
 
     if (!response.ok) {
-      console.warn("OpenAI image generation failed with status", response.status);
+      console.warn("Image generation failed with status", response.status);
+      await response.body?.cancel();
+      if (provider.remote && response.status === 401) {
+        return context.json({ error: "image_worker_auth_failed", message: "Не удалось подключить сервис генерации. Обратитесь к владельцу CRM." }, 502);
+      }
+      if (response.status === 504) {
+        return context.json({ error: "image_generation_timeout", message: "Создание фото заняло слишком много времени. Попробуйте ещё раз." }, 504);
+      }
       if (response.status === 401 || response.status === 403) {
         return context.json({ error: "openai_key_rejected", message: "OpenAI отклонил ключ или для него не включена генерация изображений. Проверьте настройки API." }, 502);
       }
@@ -101,7 +99,7 @@ imageRoutes.post("/generate", async (context) => {
       return context.json({ error: "openai_image_generation_failed", message: "Не удалось создать изображение. Попробуйте позже." }, 502);
     }
 
-    const result: unknown = await response.json();
+    const result: unknown = JSON.parse(new TextDecoder().decode(await readImageResponse(response)));
     if (!result || typeof result !== "object" || !Array.isArray((result as { data?: unknown }).data)) {
       return context.json({ error: "invalid_openai_response", message: "Сервис генерации вернул неожиданный ответ. Попробуйте позже." }, 502);
     }

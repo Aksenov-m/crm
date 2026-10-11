@@ -1,0 +1,22 @@
+# Run this file on the image server only.
+services:
+  image-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.images
+    restart: unless-stopped
+    env_file:
+      - .env.images
+    ports:
+      - "127.0.0.1:3010:3010"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3010/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

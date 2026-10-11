@@ -35,7 +35,7 @@ for required_file in docker-compose.yml Dockerfile Dockerfile.site Caddyfile pac
   fi
 done
 
-rsync --archive --delete --exclude='/.env*' "$staging_dir/" "$APP_DIR/"
+rsync --archive --delete --exclude='/.env*' --exclude='/docker-compose.override.yml' "$staging_dir/" "$APP_DIR/"
 cd "$APP_DIR"
 docker compose config --quiet
 docker compose up -d --build

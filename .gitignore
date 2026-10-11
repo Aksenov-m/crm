@@ -15,3 +15,5 @@ artifacts/
 !.env.example
 !.env.backend.example
 !.env.db.example
+!.env.images.example
+/docker-compose.override.yml
