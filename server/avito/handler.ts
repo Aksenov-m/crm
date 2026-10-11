@@ -157,6 +157,43 @@ function productIdentifier(value: unknown): string {
   return value;
 }
 
+function orderIdentifier(value: unknown): string {
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value)) throw new ApiError(400, "invalid_request", "Некорректный номер заказа Авито.");
+  return value;
+}
+
+async function boundedPdfBody(response: Response): Promise<Uint8Array> {
+  const maxBytes = 20 * 1024 * 1024;
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new ApiError(413, "label_too_large", "Файл этикеток слишком большой для загрузки.");
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new ApiError(413, "label_too_large", "Файл этикеток слишком большой для загрузки.");
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new ApiError(413, "label_too_large", "Файл этикеток слишком большой для загрузки.");
+      }
+      chunks.push(part.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
 function feedSecret(env: Environment): string {
   const secret = env("AVITO_FEED_SECRET") || "";
   if (!/^[a-f0-9]{64}$/i.test(secret)) throw new ApiError(503, "feed_configuration", "Добавьте AVITO_FEED_SECRET (64 случайных шестнадцатеричных символа) в конфигурацию backend.");
@@ -540,6 +577,73 @@ export function createAvitoHandler(dependencies: Dependencies) {
       if (input.action === "profile") {
         const data = await avitoGet(account, "/core/v1/accounts/self");
         return respond(200, { profile: { id: identifier(data.id), name: text(data.name, account.name), profileUrl: avitoUrl(data.profile_url) } });
+      }
+      if (input.action === "orders_list") {
+        const page = input.page === undefined ? 1 : Number(input.page);
+        if (!Number.isInteger(page) || page < 1 || page > 10000) throw new ApiError(400, "invalid_request", "Некорректный номер страницы заказов.");
+        const knownStatuses = new Set(["on_confirmation", "ready_to_ship", "in_transit", "canceled", "delivered", "on_return", "in_dispute", "closed"]);
+        const status = text(input.status);
+        if (status && !knownStatuses.has(status)) throw new ApiError(400, "invalid_request", "Выберите корректный статус заказа.");
+        const query = new URLSearchParams({ page: String(page), limit: "20" });
+        if (status) query.set("statuses", status);
+        const data = await avitoGet(account, `/order-management/1/orders?${query.toString()}`, "client");
+        if (!Array.isArray(data.orders) || typeof data.hasMore !== "boolean") throw new ApiError(502, "invalid_response", "Авито вернуло некорректный список заказов.");
+        return respond(200, { orders: data.orders, hasMore: data.hasMore, page, limit: 20, fetchedAt: new Date(now()).toISOString() });
+      }
+      if (input.action === "order_transition") {
+        const orderId = orderIdentifier(input.orderId);
+        const transition = text(input.transition);
+        if (!["confirm", "reject", "perform", "receive"].includes(transition)) throw new ApiError(400, "invalid_request", "Этот переход заказа не поддерживается.");
+        const params = optionalObject(input.params);
+        const cnc = optionalObject(params.cnc);
+        const body: Json = { orderId, transition };
+        if (Object.keys(cnc).length) {
+          const marketplaceId = orderIdentifier(cnc.marketplaceId);
+          const confirmCode = text(cnc.confirmCode);
+          if (confirmCode.length > 100) throw new ApiError(400, "invalid_request", "Некорректный код подтверждения.");
+          body.params = { cnc: { marketplaceId, ...(confirmCode ? { confirmCode } : {}) } };
+        }
+        const response = await avitoPost(account, "/order-management/1/order/applyTransition", body, "client");
+        let result: Json = {};
+        try { result = optionalObject(await response.json()); } catch { /* Some successful action responses have no body. */ }
+        if (result.success === false) throw new ApiError(502, "order_transition_failed", "Авито не подтвердило изменение статуса заказа.");
+        return respond(200, result);
+      }
+      if (input.action === "order_tracking_number") {
+        const orderId = orderIdentifier(input.orderId);
+        const trackingNumber = text(input.trackingNumber).trim();
+        if (!trackingNumber || trackingNumber.length > 200 || /[\u0000-\u001f\u007f]/.test(trackingNumber)) throw new ApiError(400, "invalid_request", "Введите корректный трек-номер.");
+        const response = await avitoPost(account, "/order-management/1/order/setTrackingNumber", { orderId, trackingNumber }, "client");
+        let result: Json = {};
+        try { result = optionalObject(await response.json()); } catch { /* Some successful action responses have no body. */ }
+        if (result.success === false) throw new ApiError(502, "order_tracking_failed", "Авито не подтвердило сохранение трек-номера.");
+        return respond(200, result);
+      }
+      if (input.action === "order_labels_create") {
+        if (!Array.isArray(input.orderIds) || input.orderIds.length < 1 || input.orderIds.length > 50) throw new ApiError(400, "invalid_request", "Выберите от 1 до 50 заказов для этикеток.");
+        const orderIDs = [...new Set(input.orderIds.map(orderIdentifier))];
+        const response = await avitoPost(account, "/order-management/1/orders/labels", { orderIDs }, "client");
+        const result = await json(response);
+        if (!text(result.taskID)) throw new ApiError(502, "invalid_response", "Авито не вернуло номер задачи этикеток.");
+        return respond(200, { taskId: text(result.taskID) });
+      }
+      if (input.action === "order_labels_download") {
+        const taskId = text(input.taskId);
+        if (!/^[A-Za-z0-9_-]{1,200}$/.test(taskId)) throw new ApiError(400, "invalid_request", "Некорректный номер задачи этикеток.");
+        let response: Response | null = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const token = await accessToken(account, "client");
+          response = await request(`${API}/order-management/1/orders/labels/${encodeURIComponent(taskId)}/download`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/pdf" } });
+          if (response.status === 401 && attempt === 0) { tokens.delete(`client:${cacheKey(account)}`); continue; }
+          break;
+        }
+        if (!response) throw avitoError(401);
+        if (response.status === 404) throw new ApiError(409, "labels_not_ready", "Авито ещё готовит PDF этикеток. Повторите скачивание через минуту.");
+        if (!response.ok) throw await upstreamError(response);
+        const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+        if (contentType !== "application/pdf") throw new ApiError(502, "invalid_response", "Авито пока не подготовило PDF этикеток. Повторите скачивание через минуту.");
+        const bytes = await boundedPdfBody(response);
+        return new Response(bytes as unknown as BodyInit, { status: 200, headers: { ...cors, "Content-Type": "application/pdf", "Content-Disposition": "attachment; filename=avito-order-labels.pdf", "Content-Length": String(bytes.byteLength), "Cache-Control": "no-store" } });
       }
       if (input.action === "item_metrics") {
         if (!Array.isArray(input.itemIds) || !input.itemIds.length || input.itemIds.length > 500) throw new ApiError(400, "invalid_request", "Укажите объявления для загрузки статистики.");

@@ -8,7 +8,7 @@ import { createDemoRepository } from "@/lib/demo-repository";
 import {
   ArrowDownUp, ArrowRight, ArrowUpRight, BarChart3, Bell, Check,
   CheckCheck, CheckCircle2, ChevronDown, ChevronRight, CircleHelp,
-  Eye, GripVertical, Heart, LayoutGrid, List, MessageCircle, MoreHorizontal,
+  ClipboardList, Eye, GripVertical, Heart, LayoutGrid, List, MessageCircle, MoreHorizontal,
   Package, Plus, Plug, Search, ShoppingBag, Sparkles, Users, Wallet, X,
 } from "lucide-react";
 import {
@@ -20,13 +20,15 @@ import { Conversations } from "./conversations";
 import { Buyers } from "./buyers";
 import { AvitoConnection } from "./avito-connection";
 import { AvitoMessenger } from "./avito-messenger";
+import { AvitoOrders } from "./avito-orders";
 
-type Page = "products" | "messages" | "buyers" | "analytics" | "avito";
+type Page = "products" | "messages" | "buyers" | "analytics" | "avito" | "orders";
 const NAVIGATION = [
   { id: "products" as const, label: "Товары", icon: Package },
   { id: "messages" as const, label: "Сообщения", icon: MessageCircle },
   { id: "buyers" as const, label: "Покупатели", icon: Users },
   { id: "analytics" as const, label: "Аналитика", icon: BarChart3 },
+  { id: "orders" as const, label: "Заказы", icon: ClipboardList },
   { id: "avito" as const, label: "Авито", icon: Plug },
 ];
 
@@ -259,7 +261,7 @@ export function CrmApp({ user, onLogout, demo = false, onResetDemo }: CrmAppProp
 
       <main className="main-content" id="main-content"><fieldset className="crm-content" disabled={busy || avitoBusy || refreshing || signingOut}>
         {demo && <section aria-label="Деморежим" className="mb-5 flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900"><div className="min-w-0 flex-1"><strong>Деморежим ПроЛот</strong><p>Пробуйте воронку, карточки, покупателей и аналитику. Все данные вымышленные. Изменения действуют до перезагрузки; отправка на Авито отключена.</p></div><button className="button button-secondary" onClick={onResetDemo}>Сбросить демо</button></section>}
-        <div className="page-heading"><div><div className="heading-eyebrow">ВСЁ ПОД КОНТРОЛЕМ</div><h1>{page === "products" ? "Мои товары" : title}</h1><p>{page === "products" ? "От первого фото до успешной продажи — в одном месте." : page === "messages" ? "Все разговоры с покупателями рядом с вашими товарами." : page === "buyers" ? "Знакомьтесь, договаривайтесь и сохраняйте важное." : page === "avito" ? "Ваши объявления Авито и товары CRM." : "Посмотрите, как ваши товары превращаются в продажи."}</p></div>{page === "products" && <button className="button button-primary add-product-button" onClick={() => setEditor({})}><Plus size={18} />Добавить товар</button>}{page === "analytics" && <span className="pill analytics-demo-label">{demo ? "Демонстрационные данные" : "Данные вашей CRM"}</span>}</div>
+        <div className="page-heading"><div><div className="heading-eyebrow">ВСЁ ПОД КОНТРОЛЕМ</div><h1>{page === "products" ? "Мои товары" : title}</h1><p>{page === "products" ? "От первого фото до успешной продажи — в одном месте." : page === "messages" ? "Все разговоры с покупателями рядом с вашими товарами." : page === "buyers" ? "Знакомьтесь, договаривайтесь и сохраняйте важное." : page === "avito" ? "Ваши объявления Авито и товары CRM." : page === "orders" ? "Заказы, доставка и этикетки из вашего аккаунта Авито." : "Посмотрите, как ваши товары превращаются в продажи."}</p></div>{page === "products" && <button className="button button-primary add-product-button" onClick={() => setEditor({})}><Plus size={18} />Добавить товар</button>}{page === "analytics" && <span className="pill analytics-demo-label">{demo ? "Демонстрационные данные" : "Данные вашей CRM"}</span>}</div>
 
         {storageError && <div className="storage-warning" role="alert">{storageError} <button className="text-button" onClick={() => void refreshData()}>Обновить данные</button></div>}
 
@@ -290,6 +292,7 @@ export function CrmApp({ user, onLogout, demo = false, onResetDemo }: CrmAppProp
         </>}
         {page === "buyers" && <Buyers products={state.products} buyers={state.buyers} onAdd={(buyer) => saveBuyer(buyer, false)} onUpdate={(buyer) => saveBuyer(buyer, true)} onStatusChange={changeBuyerStatus} onOpenChat={openChat} />}
         {page === "analytics" && <Analytics state={state} />}
+        {page === "orders" && (demo ? <section className="rounded-2xl border border-slate-200 bg-white p-6"><h2 className="text-lg font-semibold">Заказы Авито</h2><p className="mt-3 text-sm text-slate-600">Войдите в рабочий аккаунт CRM и добавьте ключи Business API, чтобы видеть и обрабатывать заказы Авито.</p></section> : avitoRepository && <AvitoOrders repository={avitoRepository} onBusyChange={setAvitoBusy} onOpenSettings={() => setPage("avito")} />)}
         {page === "avito" && (demo ? <section className="rounded-2xl border border-slate-200 bg-white p-6"><h2 className="text-lg font-semibold">Авито в деморежиме</h2><p className="mt-3 text-sm text-slate-600">В рабочем аккаунте можно подключить Авито, импортировать объявления и изменять цену связанного товара. В демо показаны вымышленные товары; подключение и отправка изменений на Авито отключены.</p><button className="button button-secondary mt-4" onClick={() => setPage("products")}>Посмотреть воронку товаров</button></section> : <AvitoConnection ownerId={user.id} products={state.products} onProductsChanged={refreshData} onBusyChange={setAvitoBusy} />)}
 
         <footer className="page-footer"><span>ПроЛот — больше времени на продажи</span><span>Личная CRM · Публикация в Авито не подключена</span></footer>

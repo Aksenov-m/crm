@@ -18,6 +18,9 @@ export type AvitoProductMetric={views:number|null;favorites:number|null;messages
 export type AvitoLink={account_id:string;item_id:string;product_id:string};
 export type AvitoPublicationInput={accountKey:string;productId:string;address:string;managerName:string;contactPhone:string;reportEmail?:string;acceptAgreement:boolean};
 export type AvitoPublicationResult={submitted:true;productId:string;feedUrl:string;message:string};
+export type AvitoOrderAction={name:string;required:boolean};
+export type AvitoOrder={id:string;marketplaceId?:string|null;createdAt:string;updatedAt:string;items:Array<{avitoId:string;id?:string;title:string;count:number;chatId?:string;location?:string;prices?:{price?:number;total?:number;commission?:number;discountSum?:number}}>;prices:{price?:number;total?:number;commission?:number;delivery?:number;discount?:number};status:string;delivery?:{buyerInfo?:{fullName?:string;phoneNumber?:string}|null;courierInfo?:{address?:string|null;comment?:string|null}|null;dispatchNumber?:string;serviceName?:string;serviceType?:string;terminalInfo?:{address?:string|null;code?:string|null}|null;trackingNumber?:string};schedules?:{confirmTill?:string|null;deliveryDate?:string|null;deliveryDateMin?:string|null;deliveryDateMax?:string|null;setTrackingNumberTill?:string|null;shipTill?:string|null};availableActions?:AvitoOrderAction[]|null};
+export type AvitoOrdersPage={orders:AvitoOrder[];hasMore:boolean;page:number;limit:number;fetchedAt:string};
 
 export class AvitoRequestError extends Error{
   constructor(message:string,public status:number|null,public code:string){super(message);this.name="AvitoRequestError"}
@@ -76,6 +79,15 @@ export function createAvitoRepository(){
     async deleteMessage(accountKey:string,chatId:string,messageId:string,created:number){const r=await invoke<AvitoDeleteMessageResult>({action:"delete_message",accountKey,chatId,messageId,created});if(r?.deleted!==true||!r.message)throw new AvitoRequestError("Сервер не подтвердил удаление сообщения.",null,"invalid_delete_response");return r.message},
     async readChat(accountKey:string,chatId:string,messageIds:string[]=[]){const r=await invoke<{read?:boolean}>({action:"read_chat",accountKey,chatId,...(messageIds.length?{messageIds:messageIds.slice(-100)}:{})});if(r?.read!==true)throw new AvitoRequestError("Сервер не подтвердил отметку прочтения.",null,"invalid_read_receipt")},
     async profile(accountKey:string){return(await invoke<{profile:AvitoProfile}>({action:"profile",accountKey})).profile},
+    orders(accountKey:string,page=1,status=""){return invoke<AvitoOrdersPage>({action:"orders_list",accountKey,page,...(status?{status}:{})})},
+    transitionOrder(accountKey:string,orderId:string,transition:"confirm"|"reject"|"perform"|"receive",params?:{cnc?:{marketplaceId:string;confirmCode?:string}}){return invoke<{success?:boolean;status?:string}>({action:"order_transition",accountKey,orderId,transition,...(params?{params}:{})})},
+    setOrderTrackingNumber(accountKey:string,orderId:string,trackingNumber:string){return invoke<{success?:boolean}>({action:"order_tracking_number",accountKey,orderId,trackingNumber})},
+    createOrderLabels(accountKey:string,orderIds:string[]){return invoke<{taskId:string}>({action:"order_labels_create",accountKey,orderIds})},
+    async downloadOrderLabels(accountKey:string,taskId:string):Promise<Blob>{
+      let response:Response;try{response=await fetch(backendUrl("/api/avito"),{method:"POST",credentials:"include",cache:"no-store",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"order_labels_download",accountKey,taskId})})}catch{throw new AvitoRequestError("Не удалось подключиться к серверу CRM.",null,"connection_error")}
+      if(!response.ok){const body=await response.json().catch(()=>null) as {message?:unknown;code?:unknown;error?:unknown}|null;throw new AvitoRequestError(typeof body?.message==="string"?body.message:"Не удалось скачать этикетки заказов.",response.status,typeof body?.code==="string"?body.code:typeof body?.error==="string"?body.error:"backend_error")}
+      const blob=await response.blob();if(blob.size>20*1024*1024||blob.type.toLowerCase().split(";",1)[0]!=="application/pdf")throw new AvitoRequestError("Авито пока не подготовило PDF этикеток. Повторите скачивание через минуту.",null,"invalid_label_response");return blob;
+    },
     items(accountKey:string,page:number){return invoke<AvitoItemsPage>({action:"items",accountKey,page})},
     async productMetrics(){return(await backendRequest<{metrics:Record<string,AvitoProductMetric>}>("/api/avito/product-metrics")).metrics},
     publishItem(input:AvitoPublicationInput){return invoke<AvitoPublicationResult>({action:"publish_item",...input})},
