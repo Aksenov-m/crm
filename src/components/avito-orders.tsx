@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownToLine, ChevronLeft, ChevronRight, LoaderCircle, PackageCheck, RefreshCw, ShoppingBag, Truck } from "lucide-react";
+import { ArrowDownToLine, ChevronLeft, ChevronRight, Info, LoaderCircle, PackageCheck, RefreshCw, ShoppingBag, Truck } from "lucide-react";
 import { AvitoRequestError, type AvitoAccount, type AvitoOrder, type AvitoOrdersPage, createAvitoRepository } from "@/lib/avito";
 
 const STATUS_OPTIONS = [
@@ -32,7 +32,7 @@ function money(value?: number): string {
 
 function errorText(error: unknown): string {
   if (error instanceof AvitoRequestError && (error.code === "avito_access" || error.status === 403)) {
-    return "Авито отклонило доступ к заказам для этого ключа. По спецификации API заказов доступно продавцам B2C; проверьте в кабинете Авито тип продавца и права приложения Business API.";
+    return "Авито не открыло доступ к заказам. В кабинете Авито включите «Доставку для бизнеса», укажите реквизиты компании и настройте тариф, затем обновите список.";
   }
   return error instanceof Error ? error.message : "Не удалось загрузить заказы Авито.";
 }
@@ -173,6 +173,8 @@ export function AvitoOrders({ repository, onBusyChange, onOpenSettings }: Props)
         <button className="button button-secondary" onClick={() => void loadOrders()} disabled={loadingOrders || loadingAccounts || !accountKey}><RefreshCw size={15} className={loadingOrders ? "animate-spin" : ""} />Обновить</button>
       </div>
 
+      <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-blue-100 bg-blue-50 p-3.5 text-sm leading-relaxed text-blue-900"><Info size={17} className="mt-0.5 shrink-0 text-blue-600" /><p><strong>Для работы раздела подключите «Авито Доставку для бизнеса».</strong> В кабинете Авито укажите реквизиты компании и настройте тариф. После этого заказы станут доступны через API.</p></div>
+
       <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <label className="field">Аккаунт Авито<select className="select mt-2" value={accountKey} disabled={loadingAccounts || !accounts.length} onChange={(event) => { setAccountKey(event.target.value); setPageNumber(1); setSelected(new Set()); }}><option value="">{loadingAccounts ? "Загружаем аккаунты…" : accounts.length ? "Выберите аккаунт" : "Нет настроенных аккаунтов"}</option>{accounts.map((account) => <option value={account.key} key={account.key}>{account.name}{account.avitoUserId ? ` · ID ${account.avitoUserId}` : ""}</option>)}</select></label>
         <label className="field">Статус заказа<select className="select mt-2" value={status} disabled={!accountKey} onChange={(event) => { setStatus(event.target.value); setPageNumber(1); }} aria-label="Фильтр по статусу заказа">{STATUS_OPTIONS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
@@ -180,7 +182,7 @@ export function AvitoOrders({ repository, onBusyChange, onOpenSettings }: Props)
 
       {!loadingAccounts && accounts.length === 0 && <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600"><p>Сначала добавьте ключи аккаунта Авито с правами Business API.</p><button className="button button-secondary mt-3" onClick={onOpenSettings}>Открыть настройки Авито</button></div>}
       {accountName && <p className="mt-3 text-xs text-slate-400">Источник: {accountName} · данные загружаются напрямую из Авито.</p>}
-      {error && <div className="mt-4 rounded-xl border border-red-100 bg-red-50 p-4 text-sm leading-relaxed text-red-800" role="alert">{error}{(error.includes("доступ к заказам") || error.includes("права приложения")) && <button className="ml-2 font-semibold underline" onClick={onOpenSettings}>Настройки Авито</button>}</div>}
+      {error && <div className="mt-4 rounded-xl border border-red-100 bg-red-50 p-4 text-sm leading-relaxed text-red-800" role="alert">{error}</div>}
     </div>
 
     {labelTask && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-900"><span>Авито создало задачу этикеток {labelTask.id}. Если PDF ещё не готов, повторите скачивание позже.</span><button className="button button-primary" onClick={() => void downloadLabels()} disabled={labelsBusy}><ArrowDownToLine size={16} />Скачать PDF</button></div>}
